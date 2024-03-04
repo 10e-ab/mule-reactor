@@ -1,6 +1,6 @@
 # MuleReactor
 
-MuleReactor is a tool designed to replace the Anypoint Studio "Build Automatically" feature, enabling automatic hot deployment of Mule applications in Anypoint Studio or standalone Mule runtimes.
+MuleReactor is a tool designed to replace the Anypoint Studio "Build Automatically" feature, enabling automatic hot deployment of Mule applications in Anypoint Studio. But is also works fine for other IDEs/Editors with a standalone Mule runtime.
 It listens for file changes in your Mule projects and automatically deploys the changes, streamlining the development and testing process.
 
 ## Features
