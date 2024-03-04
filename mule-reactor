@@ -1,0 +1,232 @@
+#!/usr/bin/env ruby
+
+require 'listen'
+require 'fileutils'
+require 'find'
+require 'rexml/document'
+include REXML
+require 'json'
+require 'optparse'
+require 'ostruct'
+
+# Initialize options with default values
+$options = OpenStruct.new(verbose: false, max_depth: 1, projects_dir: Dir.pwd, apps_dir: "#{ENV['MULE_HOME']}/apps")
+
+OptionParser.new do |parser|
+  parser.banner = "Usage: ruby #{File.basename(__FILE__)} [options]"
+
+  parser.on("-h", "--help", "Display this help and exit") do
+    puts parser
+    exit
+  end
+
+  parser.on("--verbose", "Run script in verbose mode") do
+    $options.verbose = true
+  end
+
+  parser.on("--max-depth DEPTH", Integer, "Set maximum directory traversal depth (default: #{$options.max_depth})") do |depth|
+    $options.max_depth = depth
+  end
+
+  parser.on("--projects-dir DIR", "Directory of projects (default: current directory)") do |dir|
+    $options.projects_dir = dir
+  end
+
+  parser.on("--apps-dir DIR", "Directory to where the apps should be deployed (default: ENV['MULE_HOME']/apps)") do |dir|
+    $options.apps_dir = dir
+  end
+end.parse!
+
+puts "Mule apps directory: #{$options.apps_dir}"
+
+def watch_dirs
+  # We alway include the current dirs ./src folder regardless of $options.max_depth
+  Dir["#{'*/' * $options.max_depth}src/main/mule"] + Dir["./src/main/mule"] + Dir["#{'*/' * $options.max_depth}src/main/resources"] + Dir["./src/main/resources"]
+end
+
+puts "Watching directories : #{watch_dirs}" if $options.verbose
+
+def extract_project_name_from_pom(path)
+  pom_file=File.read("#{extract_project_root_from_path(path)}/pom.xml")
+  document = Document.new(pom_file)
+  project_name = XPath.first(document, '//project/name')
+
+  if project_name
+    puts "Project Name: #{project_name.text}" if $options.verbose
+    return project_name.text
+  else
+    puts "ERROR: No <name> element found in the pom.xml, trying with name from project path instead"
+    # TODO This doesnt work
+    return extract_project_name_from_path(path)
+  end
+end
+
+# This is not used
+def extract_project_name_from_path(path)
+  # Pattern matches the first dir before /src/main/mule/ or /src/main/resources
+  pattern = /\/([^\/]+)\/src\/main\/(mule|resources)\//
+  path=pattern.match(path).to_a.first
+end
+
+def ensure_trailing_slash(path)
+  path[-1] == '/' ? path : "#{path}/"
+end
+
+def extract_sub_dirs(path)
+  # Pattern matches the dirs after /src/main/mule|resource but before the file
+  match = path.match(%r{/src/main/(mule|resources)(/.+)/[^/]+$})
+  path=match ? ensure_trailing_slash(match[2]) : nil
+end
+
+
+def extract_project_root_from_path(path)
+  match = path.match(/(.*)\/src\/main\/(mule|resources)\//)
+  if match
+    project_root = match[1] # The captured group before `/src/main/mule/`
+    puts "Project root: #{project_root}" if $options.verbose
+    return project_root
+  else
+    puts "ERROR: Pattern not found in path"
+  end
+end
+
+
+def force_redeploy(application_path)
+  # Find the first XML file, any xml will do just fine
+  xml_file = Dir.glob(File.join(application_path, '*.xml')).first
+
+  if xml_file
+    # "Touch" the found XML file
+    FileUtils.touch(xml_file)
+    puts "Force redeploy by touching file: #{xml_file}" if $options.verbose
+  else
+    puts "WARN: No *.xml files found in the mule directory."
+  end
+end
+
+def resources_file?(file_path)
+  file_path.include?('src/main/resources')
+end
+
+def log4j2_file?(file_path)
+  File.basename(file_path).downcase == 'log4j2.xml'
+end
+
+def contains_monitor_interval?(file_path)
+  xml_data = File.read(file_path)
+  document = Document.new(xml_data)
+  configuration = document.elements['/Configuration']
+  !configuration.attributes['monitorInterval'].nil?
+end
+
+def ignore_file?(file)    
+  if file.include?('/target/')
+    puts "Ignoring #{file}"
+    return true
+  end
+end
+
+def rebuild_mule_artifact(project_dir,app_dir)
+  file_path = "#{app_dir}/META-INF/mule-artifact/mule-artifact.json"
+  json_data = File.read(file_path)
+  data = JSON.parse(json_data)
+
+  # List all XML files in mule dir
+  mule_xml_path = "#{project_dir}/src/main/mule/"   
+  mule_xml_files = Dir.glob(File.join(mule_xml_path, '**', '*.xml')).select { |file| File.file?(file) }
+  # Make paths relative to the resources_path
+  mule_xml_files = mule_xml_files.map { |file| file.sub(mule_xml_path, '') }
+
+  # List all resources files
+  resources_path = "#{project_dir}/src/main/resources/"   
+  resources_files = Dir.glob(File.join(resources_path, '**', '*')).select { |file| File.file?(file) }
+  # Make paths relative to the resources_path
+  resources_files = resources_files.map { |file| file.sub(resources_path, '') }
+
+  # Update config json
+  data['configs'] = mule_xml_files
+  data['classLoaderModelLoaderDescriptor']['attributes']['exportedResources'] = mule_xml_files + resources_files
+
+  # Write the updated JSON back to the mule-artifact.json file
+  File.open(file_path, 'w') do |f|
+    f.write(JSON.pretty_generate(data))
+  end
+
+  puts "Rebuilt mule-artifact.json"
+end
+
+
+# Set up a listener for the projects directory
+listener = Listen.to(*watch_dirs) do |modified, added, removed|
+  puts "Changes detected" if $options.verbose
+
+  # Added feature to skip .git /target weave.autogenerated /bin
+  modified.each do |file|
+    next if ignore_file?(file)
+
+    app_dir = "#{$options.apps_dir}/#{extract_project_name_from_pom(file)}"
+    destination_dir = "#{app_dir}/#{extract_sub_dirs(file)}"
+
+    puts "Modified: #{file}" if $options.verbose
+    puts "Destination dir #{destination_dir}" if $options.verbose
+
+    puts "Sub dir name: #{extract_sub_dirs(file)}" if $options.verbose
+    
+    unless Dir.exist?(app_dir)
+      puts "No app deployed in: #{app_dir} Will not update"
+      next
+    end
+
+    unless Dir.exist?(destination_dir)
+      puts "Created sub-dirs for #{destination_dir}"  
+      FileUtils.mkdir_p(destination_dir)
+    end
+
+    FileUtils.cp(file, destination_dir, noop: false, verbose: $options.verbose)
+    puts "Updated: #{file} in #{destination_dir}"
+
+    if log4j2_file?(file) && contains_monitor_interval?(file)
+      puts "Skipping forced re-deploy because log4j2.xml contains monitorInterval"
+    elsif resources_file?(file)
+      force_redeploy(app_dir)
+    end
+
+  end
+
+  added.each do |file|
+    next if ignore_file?(file)
+    app_dir = "#{$options.apps_dir}/#{extract_project_name_from_pom(file)}"
+    destination_dir = "#{app_dir}/#{extract_sub_dirs(file)}"
+
+    unless Dir.exist?(app_dir)
+      puts "No app deployed in: #{app_dir} Will not update"
+      next
+    end
+
+    unless Dir.exist?(destination_dir)
+      puts "Created sub-dirs for #{destination_dir}"  
+      FileUtils.mkdir_p(destination_dir)
+    end
+
+    FileUtils.cp(file, destination_dir, noop: false, verbose: $options.verbose)
+    puts "Added: #{file} in #{destination_dir}"
+    # This will force a redeploy 
+    rebuild_mule_artifact(extract_project_root_from_path(file),app_dir)
+  end
+
+  removed.each do |file|
+    next if ignore_file?(file)
+    app_dir = "#{$options.apps_dir}/#{extract_project_name_from_pom(file)}"
+    destination_dir = "#{$options.apps_dir}/#{extract_project_name_from_pom(file)}#{extract_sub_dirs(file)}"
+    delete_file="#{destination_dir}/#{File.basename(file)}"
+    FileUtils.rm(delete_file,noop: false, verbose: $options.verbose)
+    puts "Removed: #{delete_file}"
+    # This will force a redeploy 
+    rebuild_mule_artifact(extract_project_root_from_path(file),app_dir)
+  end
+
+end
+
+listener.start # Start listening to file changes
+puts "Monitoring changes in: #{$options.projects_dir}. Press Ctrl+C to stop."
+sleep
