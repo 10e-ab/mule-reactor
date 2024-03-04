@@ -107,7 +107,9 @@ xml
 ```
 This setting tells Mule to check for changes in the log4j2.xml file every 10 seconds.
 
-3. Configure Mule to Detect Hot Deploys Faster: Speed up the interval at which Mule checks for changes and hot deploys applications by adding the -Dmule.launcher.changeCheckInterval=500 argument to your Run Configuration. This sets the check interval to 500 milliseconds. If you're using Anypoint Studio, you can add this under Run > Run Configurations..., selecting your application's configuration, and then adding it to the VM Arguments section.
+3. Configure Mule to Detect Hot Deploys Faster: Speed up the interval at which Mule checks for changes and hot deploys applications by adding the
+   ``` -Dmule.launcher.changeCheckInterval=500 ```
+   argument to your Run Configuration. This sets the check interval to 500 milliseconds. If you're using Anypoint Studio, you can add this under Run > Run Configurations..., selecting your application's configuration, and then adding it to the VM Arguments section.
 Applying these optional configurations will streamline your development process, making it more efficient and responsive to changes.
 
 This section offers users guidance on optimizing their environment for use with MuleReactor, improving both the usability of the tool and the overall developer experience.
