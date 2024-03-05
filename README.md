@@ -70,7 +70,7 @@ By default, the max depth is set to `1`, which means MuleReactor will monitor fo
 However, if your projects are nested within subdirectories, you might miss changes in those projects unless you increase the --max-depth value. For example, if you have a directory structure where each team's projects are stored in separate subdirectories, you'll need to adjust the max depth accordingly:
 
 ```bash
-ruby mule-reactor.rb --max-depth 2
+mule-reactor --max-depth 2
 ```
 This command will monitor changes not just in projects located directly under the specified directory, but also in projects that are one level deeper in the directory hierarchy.
 
