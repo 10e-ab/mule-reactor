@@ -6,10 +6,11 @@ It listens for file changes in your Mule projects and automatically deploys the 
 ## Features
 
 - **Real-time Deployment**: Quickly deploys changes to Mule applications as soon as files are modified.
-- **Versatile Deployment Support**: Works with both Anypoint Studio and standalone Mule runtimes.
-- **Editor Agnostic**: Compatible with other editors, enhancing workflow flexibility for Mule application development across diverse development setups.
 - **Comprehensive File Support**: Supports changing property files, `log4j2.xml`, and other resources, ensuring that all aspects of your Mule application can be dynamically updated.
 - **Flexible Configuration Management**: Supports adding new, renaming, and removing Mule XML configuration files, allowing for on-the-fly reconfiguration of your Mule applications.
+- **Versatile Deployment Support**: Works with both Anypoint Studio and standalone Mule runtimes.
+- **Editor Agnostic**: Compatible with other editors, enhancing workflow flexibility for Mule application development across diverse development setups.
+
 
 ## Prerequisites
 
