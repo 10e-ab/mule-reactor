@@ -1,5 +1,4 @@
 #!/usr/bin/env ruby
-
 require 'listen'
 require 'fileutils'
 require 'find'
@@ -11,8 +10,12 @@ require 'ostruct'
 require 'filewatcher'
 require 'open3'
 
+
+# TODOs and Ideas
+# Would it be posible to skip deploy when the only formatting is changed?
+
 # Initialize options with default values
-$options = OpenStruct.new(verbose: false, max_depth: 1, watch_pom: false, notification: false, projects_dir: Dir.pwd, apps_dir: "#{ENV['MULE_HOME']}/apps")
+$options = OpenStruct.new(verbose: false, watch_pom: false, notification: false, projects_dir: Dir.pwd, apps_dir: "#{ENV['MULE_HOME']}/apps")
 
 OptionParser.new do |parser|
   parser.banner = "Usage: ruby #{File.basename(__FILE__)} [options]"
@@ -24,10 +27,6 @@ OptionParser.new do |parser|
 
   parser.on("--verbose", "Run script in verbose mode") do
     $options.verbose = true
-  end
-
-  parser.on("--max-depth DEPTH", Integer, "Set maximum directory traversal depth (default: #{$options.max_depth})") do |depth|
-    $options.max_depth = depth
   end
 
   parser.on("-n", "--notification", "Enable notifications") do
@@ -49,12 +48,21 @@ end.parse!
 
 puts "Mule apps directory: #{$options.apps_dir}"
 
-def watch_dirs
-  # We alway include the current dirs ./src folder regardless of $options.max_depth
-  Dir["#{'*/' * $options.max_depth}src/main/mule"] + Dir["./src/main/mule"] + Dir["#{'*/' * $options.max_depth}src/main/resources"] + Dir["./src/main/resources"]
+def ensure_trailing_slash(path)
+  path[-1] == '/' ? path : "#{path}/"
 end
 
-puts "Watching directories : #{watch_dirs}" if $options.verbose
+def remove_trailing_slash(path)
+  path.chomp('/')
+end
+
+def watch_dirs(projects_dir=$options.projects_dir)
+  # Track current dir and one level down
+  projects_dir=remove_trailing_slash(projects_dir)
+  dirs=Dir["#{projects_dir}/*/src/main/mule"] + Dir["#{projects_dir}/src/main/mule"] + Dir["#{projects_dir}/*/src/main/resources"] + Dir["#{projects_dir}/src/main/resources"]
+  puts "Watching directories : #{dirs}" if $options.verbose
+  dirs
+end
 
 def extract_project_name_from_pom(pom_file_path)
   document = Document.new(File.read(pom_file_path))
@@ -71,14 +79,6 @@ end
 def extract_project_name_from_filepath(path)
   pom_file="#{extract_project_root_from_path(path)}/pom.xml"
   extract_project_name_from_pom(pom_file)
-end
-
-def ensure_trailing_slash(path)
-  path[-1] == '/' ? path : "#{path}/"
-end
-
-def remove_trailing_slash(path)
-  path.chomp('/')
 end
 
 def extract_sub_dirs(path)
@@ -184,7 +184,6 @@ def initialize_pom_state(projects_dir)
   projects_dir=remove_trailing_slash(projects_dir)
   (Dir.glob("#{projects_dir}/pom.xml") + Dir.glob("#{projects_dir}/*/pom.xml")).each do |pom_file|
     next if File.directory?(pom_file) # Skip directories just in case
-    puts pom_file
     xml_content = File.read(pom_file)
     dependencies_hash = hash_dependencies(xml_content)
     pom_state[pom_file] = dependencies_hash
