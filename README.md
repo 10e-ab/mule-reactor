@@ -9,21 +9,23 @@ It listens for file changes in your Mule projects and automatically deploys the 
 - **Comprehensive File Support**: Supports changing property files, `log4j2.xml`, and other resources, ensuring that all aspects of your Mule application can be dynamically updated.
 - **Flexible Configuration Management**: Supports adding new, renaming, and removing Mule XML configuration files, allowing for on-the-fly reconfiguration of your Mule applications.
 - **Versatile Deployment Support**: Works with both Anypoint Studio and standalone Mule runtimes.
-- **Editor Agnostic**: Compatible with other editors, enhancing workflow flexibility for Mule application development across diverse development setups.
+- **Editor Agnostic**: Compatible with all editors, enhancing workflow flexibility for Mule application development across diverse development setups.
 
 
 ## Prerequisites
 
-- Ruby
+- Ruby 
 - [Listen](https://github.com/guard/listen) gem
+- [Filewatcher](https://github.com/filewatcher/filewatcher) gem
 - Mule runtime or Anypoint Studio setup
 
 ## Installation
 
-1. Ensure Ruby is installed on your system.
+1. Ensure Ruby is [installed](https://www.ruby-lang.org/en/documentation/installation) on your system.
 2. Install the required gems:
 ```
 gem install listen
+gem install filewatcher
 ```
 3. Add mule-reactor to you PATH
 
@@ -47,14 +49,6 @@ mule-reactor
 With mule-reactor running, any changes you make to your Mule project files will be automatically synced to the deployed application, prompting hot deployment. 
 This enables you to see your changes reflected in the running application almost instantly
 
-
-
-### Specifying a Custom Projects Directory
-If you want to monitor a specific project or a directory containing multiple projects, use the --projects-dir option:
-```
-mule-reactor --projects-dir /path/to/your/projects
-```
-
 ### Specifying Mule Apps Deployment Directory
 When MULE_HOME is not set, or you wish to deploy to a different directory, use the --apps-dir option:
 
@@ -63,24 +57,42 @@ mule-reactor --apps-dir /custom/path/to/mule/apps
 ```
 
 
-### Using the Max Depth Parameter
-
-The `--max-depth` parameter controls how deeply MuleReactor will search within directories to find Mule projects to monitor. This is particularly useful when you have a hierarchical structure of project directories.
-
-By default, the max depth is set to `1`, which means MuleReactor will monitor for changes in Mule projects located directly within the specified projects directory or the current directory if none is specified. This default setting is suitable for monitoring a single project or multiple projects stored directly under a common parent directory.
-However, if your projects are nested within subdirectories, you might miss changes in those projects unless you increase the --max-depth value. For example, if you have a directory structure where each team's projects are stored in separate subdirectories, you'll need to adjust the max depth accordingly:
-
-```bash
-mule-reactor --max-depth 2
+### Specifying a Custom Projects Directory
+If you want to monitor a specific project or a directory containing multiple projects, use the --projects-dir option:
 ```
-This command will monitor changes not just in projects located directly under the specified directory, but also in projects that are one level deeper in the directory hierarchy.
+mule-reactor --projects-dir /path/to/your/projects
+```
 
+### Enabling Notifications
+To receive notifications for important events such as deployments, enable notifications using the -n or --notification option:
+
+```
+mule-reactor --notification
+```
+
+### Monitoring Deployment Status
+If you want to monitor the deployment status by tailing the server log and receive notifications on the deployment status, use the -d or --watch-deployments option. Note that notifications must be enabled for this feature to work, and it might not work on Windows due to the use of tailing log files:
+
+```
+mule-reactor --notification --watch-deployments
+```
+
+### Watching pom.xml for Changes
+To automatically detect changes in pom.xml files and trigger a rebuild when dependencies(or other relavant content) has changed, use the -p or --watch-pom option. This is useful for developers looking to automate the process of rebuilding projects upon changes to their Maven configuration:
+```
+mule-reactor --watch-pom
+```
 
 ### Full Example with Verbose Output
 To start the script with verbose output, monitoring a specific directory for projects, and specifying a custom deployment directory:
 
 ```
-mule-reactor  --verbose --projects-dir /path/to/your/projects --apps-dir /path/to/mule/runtime/apps --max-depth 1
+mule-reactor --verbose --projects-dir /path/to/your/projects --apps-dir /path/to/mule/runtime/apps --notification --watch-deployments --watch-pom
+```
+
+Using the short format
+```
+mule-reactor -vndp --projects-dir /path/to/your/projects --apps-dir /path/to/mule/runtime/apps
 ```
 
 
@@ -88,7 +100,43 @@ mule-reactor  --verbose --projects-dir /path/to/your/projects --apps-dir /path/t
 ### Understanding Default Behavior
 - **Projects Directory:** By default, MuleReactor monitors the current directory (.) for Mule projects. This can be the root of a single project or a directory containing multiple Mule projects.
 - **Mule Apps Deployment Directory:** MuleReactor deploys applications to the Mule runtime's apps directory, which is defined by the MULE_HOME environment variable. If MULE_HOME is set, the default deployment directory is $MULE_HOME/apps. If you need to deploy to a different location, use the --apps-dir option.
-- **Depth Parameter**: The default value for the `--max-depth` parameter is set to `1`. This means that by default, MuleReactor will monitor for changes in Mule projects located directly within the specified projects directory or the current directory if none is specified. This setup is suitable for a flat structure of projects. If your projects are nested within subdirectories, you may need to increase this value to ensure MuleReactor monitors all desired projects.
+
+
+### Setting Up Notifications
+For the notification feature of mule-reactor to function, a script named mule-reactor-notification must be added to your system's PATH. This script will be called by mule-reactor to send notifications.
+
+Look for example notifier scripts in the notifiers folder of the mule-reactor project directory.
+
+##### Mac OS Specifics
+
+A script for macOS is provided with mule-reactor. It utilizes terminal-notifier, a command-line tool to send macOS User Notifications.
+***Note:*** terminal-notifier can be installed via Homebrew with the command brew install terminal-notifier.
+
+##### Adding Notification Scripts for Other Platforms:
+
+While the provided script caters to macOS users, you can easily create and add your own notification script for other operating systems.
+
+How to Create a Notification Script:
+* The script should be named mule-reactor-notification.
+* Your script needs to accept two command-line arguments:
+First Argument (Title): The title of the notification.
+Second Argument (Message): The message body of the notification.
+Example for macOS using terminal-notifier:
+
+
+Adding to PATH:
+
+Ensure your mule-reactor-notification script is placed in a directory that's part of your system's PATH. This allows mule-reactor to find and execute the script from anywhere.
+
+Testing Your Notification Script:
+
+To test your script, run the following in your terminal, replacing title and message with test values:
+
+```
+mule-reactor-notification "<title>" "<message>"
+```
+If everything is set up correctly, you should see a system notification with your specified title and message. If not, verify that terminal-notifier is correctly installed and that your script is executable and located in a directory included in your PATH.
+
 
 ### Optional Configuration
 
