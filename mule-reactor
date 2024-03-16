@@ -86,8 +86,7 @@ def extract_project_name_from_filepath(path)
   extract_project_name_from_pom(pom_file)
 end
 
-# The name of this function if not very good
-def extract_sub_dirs(path)
+def app_sub_dirs(path)
   # Pattern matches the dirs after /src/main/mule|resource but before the file
   match = path.match(%r{/src/main/(mule|resources)(/.+)/[^/]+$})
   path=match ? ensure_trailing_slash(match[2]) : nil
@@ -101,20 +100,6 @@ def extract_project_root_from_path(path)
     return project_root
   else
     puts "ERROR: Pattern not found in path"
-  end
-end
-
-# Do we need this or can we use rebuild_mule_artifact()
-def force_redeploy(application_path)
-  # Find the first XML file, any xml will do just fine
-  xml_file = Dir.glob(File.join(application_path, '*.xml')).first
-
-  if xml_file
-    # "Touch" the found XML file
-    FileUtils.touch(xml_file)
-    puts "Force redeploy by touching file: #{xml_file}" if VERBOSE
-  else
-    puts "WARN: No *.xml files found in the mule directory."
   end
 end
 
@@ -140,6 +125,7 @@ def ignore_file?(file)
   end
 end
 
+# This will trigger a redeploy
 def rebuild_mule_artifact(project_dir,app_dir)
   file_path = "#{app_dir}/META-INF/mule-artifact/mule-artifact.json"
   json_data = File.read(file_path)
@@ -161,7 +147,6 @@ def rebuild_mule_artifact(project_dir,app_dir)
   File.open(file_path, 'w') do |f|
     f.write(JSON.pretty_generate(data))
   end
-
   puts "Rebuilt mule-artifact.json"
 end
 
@@ -197,10 +182,10 @@ def rebuild_project(pom_file,apps_dir,notification)
   project_root=File.dirname(pom_file)
   project_name=extract_project_name_from_pom(pom_file)
   send_notification('🔄', "Rebuilding: #{project_name}") if notification
+  # TODO: This wont work on windows
+  # TODO: Make the build command on configurable
   IO.popen("cd #{project_root};mvn clean package -DskipTests && cp target/#{project_name}*.jar #{apps_dir}/#{project_name}.jar") do |io|
-    io.each do |line|
-      puts line
-    end
+    io.each { |line| puts line }
     io.close
   end
   exit_status = $?.exitstatus
@@ -217,7 +202,23 @@ def send_notification(title, message)
   system "mule-reactor-notifier \"#{title}\" \"#{message}\"" 
 end
 
-def watch_mule_and_resource_dirs(apps_dir,projects_dir)
+def app_deployed?(app_dir)
+  if Dir.exist?(app_dir)
+    return true
+  else
+    puts "No app deployed in: #{app_dir} Will not update"
+    return false
+  end
+end
+
+def create_destination_sub_dirs_if_missing(destination_dir)
+  unless Dir.exist?(destination_dir)
+    puts "Created sub-dirs for #{destination_dir}"  
+    FileUtils.mkdir_p(destination_dir)
+  end
+end
+
+def watch_mule_and_resources_listener(apps_dir,projects_dir)
   listener = Listen.to(*watch_dirs(projects_dir)) do |modified, added, removed|
     puts "Changes detected" if VERBOSE
 
@@ -225,21 +226,10 @@ def watch_mule_and_resource_dirs(apps_dir,projects_dir)
       next if ignore_file?(file)
 
       app_dir = "#{apps_dir}/#{extract_project_name_from_filepath(file)}"
-      destination_dir = "#{app_dir}/#{extract_sub_dirs(file)}"
-
-      puts "Modified: #{file}" if VERBOSE
+      destination_dir = "#{app_dir}/#{app_sub_dirs(file)}"
+      create_destination_sub_dirs_if_missing(destination_dir)
       puts "Destination dir #{destination_dir}" if VERBOSE
-      puts "Sub dir name: #{extract_sub_dirs(file)}" if VERBOSE
-
-      unless Dir.exist?(app_dir)
-        puts "No app deployed in: #{app_dir} Will not update"
-        next
-      end
-
-      unless Dir.exist?(destination_dir)
-        puts "Created sub-dirs for #{destination_dir}"  
-        FileUtils.mkdir_p(destination_dir)
-      end
+      next unless app_deployed?(app_dir)
 
       FileUtils.cp(file, destination_dir, noop: false, verbose: VERBOSE)
       puts "Updated: #{file} in #{destination_dir}"
@@ -247,43 +237,37 @@ def watch_mule_and_resource_dirs(apps_dir,projects_dir)
       if log4j2_file?(file) && contains_monitor_interval?(file)
         puts "Skipping forced re-deploy because log4j2.xml contains monitorInterval"
       elsif resources_file?(file)
-        force_redeploy(app_dir)
+        rebuild_mule_artifact(extract_project_root_from_path(file),app_dir)
       end
+      puts "Updated: #{file}" if VERBOSE
     end
 
     added.each do |file|
       next if ignore_file?(file)
+
       app_dir = "#{apps_dir}/#{extract_project_name_from_filepath(file)}"
-      destination_dir = "#{app_dir}/#{extract_sub_dirs(file)}"
+      next unless app_deployed?(app_dir)
 
-      unless Dir.exist?(app_dir)
-        puts "No app deployed in: #{app_dir} Will not update"
-        next
-      end
-
-      unless Dir.exist?(destination_dir)
-        puts "Created sub-dirs for #{destination_dir}"  
-        FileUtils.mkdir_p(destination_dir)
-      end
+      destination_dir = "#{app_dir}/#{app_sub_dirs(file)}"
+      create_destination_sub_dirs_if_missing(destination_dir)
 
       FileUtils.cp(file, destination_dir, noop: false, verbose: VERBOSE)
       puts "Added: #{file} in #{destination_dir}"
-      # This will force a redeploy 
       rebuild_mule_artifact(extract_project_root_from_path(file),app_dir)
     end
 
     removed.each do |file|
       next if ignore_file?(file)
+
       app_dir = "#{apps_dir}/#{extract_project_name_from_filepath(file)}"
-      destination_dir = "#{apps_dir}/#{extract_project_name_from_filepath(file)}#{extract_sub_dirs(file)}"
+      destination_dir = "#{apps_dir}/#{extract_project_name_from_filepath(file)}#{app_sub_dirs(file)}"
+
       delete_file="#{destination_dir}/#{File.basename(file)}"
       FileUtils.rm(delete_file,noop: false, verbose: VERBOSE)
       puts "Removed: #{delete_file}"
-      # This will force a redeploy 
       rebuild_mule_artifact(extract_project_root_from_path(file),app_dir)
     end
   end
-
   listener.start
 end
 
@@ -307,6 +291,7 @@ def watch_pom_files(projects_dir,apps_dir,notification)
           dependencies_hash = hash_dependencies(xml_content)
           current_pom_state[filename] = dependencies_hash
           puts "Last pom state: #{pom_state}" if VERBOSE
+          # This should not really happen, could probably be removed
           if pom_state[filename] == nil
             puts "Change tracking new pom file: #{filename}" 
           elsif pom_state[filename] != dependencies_hash
@@ -319,12 +304,11 @@ def watch_pom_files(projects_dir,apps_dir,notification)
         when 'deleted'
           puts 'NOT IMPLEMENTED: POM file deleted'
         end
-        pom_state = current_pom_state
+        pom_state.merge!(current_pom_state)
       end
     end
   end
 end
-
 
 def watch_deployments(apps_dir)
   puts "Deployment watching enabled" if VERBOSE
@@ -346,7 +330,7 @@ def watch_deployments(apps_dir)
 end
 
 def run(options)
-  watch_mule_and_resource_dirs(options.apps_dir,options.projects_dir)
+  watch_mule_and_resources_listener(options.apps_dir,options.projects_dir)
   watch_pom_files(options.projects_dir,options.apps_dir,options.notification) if options.watch_pom
   watch_deployments(options.apps_dir) if options.watch_deployments && options.notification
 
