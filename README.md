@@ -64,14 +64,14 @@ mule-reactor --projects-dir /path/to/your/projects
 ```
 
 ### Enabling Notifications
-To receive notifications for important events such as deployments, enable notifications using the -n or --notification option:
+To receive notifications for important events such as deployments and builds, enable notifications using the -n or --notification option:
 
 ```
 mule-reactor --notification
 ```
 
 ### Monitoring Deployment Status
-If you want to monitor the deployment status by tailing the server log and receive notifications on the deployment status, use the -d or --watch-deployments option. Note that notifications must be enabled for this feature to work, and it might not work on Windows due to the use of tailing log files:
+If you want to monitor the deployment status by tailing the server log and receive notifications on the deployment status, use the -d or --watch-deployments option. Note that notifications must be enabled for this feature to work, and it might not work on Windows due if the tail command is unavailable:
 
 ```
 mule-reactor --notification --watch-deployments
@@ -82,19 +82,7 @@ To automatically detect changes in pom.xml files and trigger a rebuild when depe
 ```
 mule-reactor --watch-pom
 ```
-
-### Full Example with Verbose Output
-To start the script with verbose output, monitoring a specific directory for projects, and specifying a custom deployment directory:
-
-```
-mule-reactor --verbose --projects-dir /path/to/your/projects --apps-dir /path/to/mule/runtime/apps --notification --watch-deployments --watch-pom
-```
-
-Using the short format
-```
-mule-reactor -vndp --projects-dir /path/to/your/projects --apps-dir /path/to/mule/runtime/apps
-```
-
+This can be a bit resource intensive if the list of projects is large
 
 
 ### Understanding Default Behavior
