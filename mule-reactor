@@ -9,6 +9,7 @@ require 'optparse'
 require 'ostruct'
 require 'filewatcher'
 require 'open3'
+require 'diffy'
 
 
 # TODO/Ideas
@@ -16,7 +17,7 @@ require 'open3'
 # * Would it be possible to only update files if the diff and ignoring white spaces 
 
 # Initialize options with default values
-options = OpenStruct.new(verbose: false, watch_pom: false, notification: false, watch_deployments: false,projects_dir: Dir.pwd, apps_dir: "#{ENV['MULE_HOME']}/apps")
+options = OpenStruct.new(verbose: false, watch_pom: false, notification: false, ignore_formatting: false,ignore_blank_lines: false,ignore_whitespace: false, watch_deployments: false,projects_dir: Dir.pwd, apps_dir: "#{ENV['MULE_HOME']}/apps")
 
 OptionParser.new do |parser|
   parser.banner = "Usage: ruby #{File.basename(__FILE__)} [options]"
@@ -40,6 +41,18 @@ OptionParser.new do |parser|
 
   parser.on("-p", "--watch-pom", "Detect changes in pom.xml and rebuild when relevant content has changed") do
     options.watch_pom = true
+  end
+
+  parser.on("-f", "--ignore-formatting", "Ignores changes in formatting (e.g., indentation, line breaks) for JSON and XML files.") do
+    options.ignore_formatting = true
+  end
+
+  parser.on("-w", "--ignore-whitespace", "Ignores whitespace changes (e.g., spaces, tabs, new lines) in all file types.") do
+    options.ignore_whitespace = true
+  end
+
+  parser.on("-B", "--ignore-blank-lines", "Ignores blank lines in all file types during comparison.") do
+    options.ignore_blank_lines = true
   end
 
   parser.on("--projects-dir DIR", "Directory of projects (default: current directory)") do |dir|
@@ -218,7 +231,68 @@ def create_destination_sub_dirs_if_missing(destination_dir)
   end
 end
 
-def watch_mule_and_resources_listener(apps_dir,projects_dir)
+# Test if the changes are only formatting or white spaces
+def significant_changes?(updated_file,current_file,ignore_formatting,ignore_whitespace,ignore_blank_lines)
+  return true unless ignore_formatting || ignore_whitespace || ignore_blank_lines
+
+  begin
+    # We should propably only diff .xml, .json and .properties file
+    return true unless File.exist?(updated_file) && File.exist?(current_file)
+
+    # Define a size threshold of 1MB
+    size_threshold = 1 * 1024 * 1024
+
+    # Check the size of both files
+    return true if File.size(updated_file) > size_threshold || File.size(current_file) > size_threshold
+    current_content=""
+    updated_content=""
+
+    # Format xml and json before diffing
+    # TODO: Add support for dwl files, this is a bit hard because no formatter exists
+    if ignore_formatting
+      puts "Formatting XML and JSON before diff" if VERBOSE
+      case File.extname(updated_file).downcase
+      when ".xml"
+        updated_document = REXML::Document.new(File.new(updated_file))
+        current_document = REXML::Document.new(File.new(current_file))
+        formatter = REXML::Formatters::Pretty.new(2)
+        formatter.compact = true
+        updated_content = ""
+        current_content = ""
+        formatter.write(updated_document, updated_content)
+        formatter.write(current_document, current_content)
+      when ".json"
+        updated_content = JSON.pretty_generate(JSON.parse(File.read(updated_file)))
+        current_content = JSON.pretty_generate(JSON.parse(File.read(current_file)))
+      end
+    end
+
+    current_content = File.read(current_file)
+    updated_content = File.read(updated_file)
+
+    options=""
+    options+="w" if ignore_whitespace
+    options+="B" if ignore_blank_lines
+    diff_options=options.empty? ? nil : "-#{options}"
+
+    # Calculate the diff, ignoring whitespace
+    diff = Diffy::Diff.new(current_content, updated_content, :diff => diff_options, :allow_empty_diff => true, :include_plus_and_minus_in_html => false)
+    puts "Diff: #{diff}" if VERBOSE
+
+    diff.any? 
+  rescue REXML::ParseException => e
+    puts "Error parsing XML: #{e.message}"
+  rescue JSON::ParserError => e
+    puts "Error parsing JSON: #{e.message}"
+    return true # or false, depending on how you want to handle parsing errors
+  rescue  => e
+    puts "Error diffing files: #{e.message}"
+    return true # or false, depending on how you want to handle parsing errors
+  end
+end
+
+
+def watch_mule_and_resources_listener(apps_dir,projects_dir,ignore_formatting,ignore_whitespace,ignore_blank_lines)
   listener = Listen.to(*watch_dirs(projects_dir)) do |modified, added, removed|
     puts "Changes detected" if VERBOSE
 
@@ -230,6 +304,11 @@ def watch_mule_and_resources_listener(apps_dir,projects_dir)
       create_destination_sub_dirs_if_missing(destination_dir)
       puts "Destination dir #{destination_dir}" if VERBOSE
       next unless app_deployed?(app_dir)
+
+      unless significant_changes?(file,"#{destination_dir}/#{File.basename(file)}",ignore_formatting,ignore_whitespace,ignore_blank_lines)
+        puts "No significant change, will not update"
+        next
+      end
 
       FileUtils.cp(file, destination_dir, noop: false, verbose: VERBOSE)
       puts "Updated: #{file} in #{destination_dir}"
@@ -330,7 +409,7 @@ def watch_deployments(apps_dir)
 end
 
 def run(options)
-  watch_mule_and_resources_listener(options.apps_dir,options.projects_dir)
+  watch_mule_and_resources_listener(options.apps_dir,options.projects_dir,options.ignore_formatting,options.ignore_whitespace,options.ignore_blank_lines)
   watch_pom_files(options.projects_dir,options.apps_dir,options.notification) if options.watch_pom
   watch_deployments(options.apps_dir) if options.watch_deployments && options.notification
 
