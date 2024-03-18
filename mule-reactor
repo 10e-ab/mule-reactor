@@ -264,11 +264,12 @@ def significant_changes?(updated_file,current_file,ignore_formatting,ignore_whit
       when ".json"
         updated_content = JSON.pretty_generate(JSON.parse(File.read(updated_file)))
         current_content = JSON.pretty_generate(JSON.parse(File.read(current_file)))
+      else
+        current_content = File.read(current_file)
+        updated_content = File.read(updated_file)
       end
     end
 
-    current_content = File.read(current_file)
-    updated_content = File.read(updated_file)
 
     options=""
     options+="w" if ignore_whitespace
