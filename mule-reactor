@@ -14,7 +14,9 @@ require 'diffy'
 
 # TODO/Ideas
 # * Improve error handling
-# * Would it be possible to only update files if the diff and ignoring white spaces 
+# * Document the new formatting and whitespace feature
+# * There is a lot of options/flags. Maybe remove some, negate others or add a -s --sensible for sensible defaults.
+# * Create a jruby/java version that can be used on sites that don't allow ruby
 
 # Initialize options with default values
 options = OpenStruct.new(verbose: false, watch_pom: false, notification: false, ignore_formatting: false,ignore_blank_lines: false,ignore_whitespace: false, watch_deployments: false,projects_dir: Dir.pwd, apps_dir: "#{ENV['MULE_HOME']}/apps")
@@ -170,7 +172,7 @@ def hash_dependencies(xml_content)
     dependencies_text+= dependency.to_s
   end
 
-  # Since dependencies can be defined in the parent pom we include this as well
+  # Since dependencies can be defined in the parent pom we include any changes to the parent
   parent_text = ""
   document.elements.to_a("//parent/*").sort_by {|d| d.to_s}.each do |parent|
     parent_text+= parent.to_s
@@ -196,7 +198,7 @@ def rebuild_project(pom_file,apps_dir,notification)
   project_name=extract_project_name_from_pom(pom_file)
   send_notification('🔄', "Rebuilding: #{project_name}") if notification
   # TODO: This wont work on windows
-  # TODO: Make the build command on configurable
+  # TODO: Make the build command configurable
   IO.popen("cd #{project_root};mvn clean package -DskipTests && cp target/#{project_name}*.jar #{apps_dir}/#{project_name}.jar") do |io|
     io.each { |line| puts line }
     io.close
@@ -219,7 +221,7 @@ def app_deployed?(app_dir)
   if Dir.exist?(app_dir)
     return true
   else
-    puts "No app deployed in: #{app_dir} Will not update"
+    puts "No app deployed in: #{app_dir} Will not update" if VERBOSE
     return false
   end
 end
@@ -236,7 +238,6 @@ def significant_changes?(updated_file,current_file,ignore_formatting,ignore_whit
   return true unless ignore_formatting || ignore_whitespace || ignore_blank_lines
 
   begin
-    # We should propably only diff .xml, .json and .properties file
     return true unless File.exist?(updated_file) && File.exist?(current_file)
 
     # Define a size threshold of 1MB
@@ -244,6 +245,7 @@ def significant_changes?(updated_file,current_file,ignore_formatting,ignore_whit
 
     # Check the size of both files
     return true if File.size(updated_file) > size_threshold || File.size(current_file) > size_threshold
+
     current_content=""
     updated_content=""
 
@@ -257,8 +259,6 @@ def significant_changes?(updated_file,current_file,ignore_formatting,ignore_whit
         current_document = REXML::Document.new(File.new(current_file))
         formatter = REXML::Formatters::Pretty.new(2)
         formatter.compact = true
-        updated_content = ""
-        current_content = ""
         formatter.write(updated_document, updated_content)
         formatter.write(current_document, current_content)
       when ".json"
@@ -276,7 +276,6 @@ def significant_changes?(updated_file,current_file,ignore_formatting,ignore_whit
     options+="B" if ignore_blank_lines
     diff_options=options.empty? ? nil : "-#{options}"
 
-    # Calculate the diff, ignoring whitespace
     diff = Diffy::Diff.new(current_content, updated_content, :diff => diff_options, :allow_empty_diff => true, :include_plus_and_minus_in_html => false)
     puts "Diff: #{diff}" if VERBOSE
 
@@ -352,9 +351,9 @@ def watch_mule_and_resources_listener(apps_dir,projects_dir,ignore_formatting,ig
 end
 
 def watch_pom_files(projects_dir,apps_dir,notification)
-  # We use filewatcher, that poll for changes, because using eventbase file listenter is to slow for large folder structures with lots of changes going on, 
+  # We use filewatcher, that polls for changes, because using eventbase file listenter is to slow for large folder structures with lots of changes going on, 
   # for example when we run mvn clean package.
-  # The problem is that I have not found an platform independent filewatcher the handles ignores in an efficent way
+  # I have not found an platform independent filewatcher the handles ignore in an efficent way
 
   puts "Tracking changes in pom.xml files" if VERBOSE
   pom_file_watcher=Filewatcher.new(["#{projects_dir}/pom.xml","#{projects_dir}/*/pom.xml"], exclude: ['target'], interval: 1.1)
@@ -394,7 +393,7 @@ def watch_deployments(apps_dir)
   puts "Deployment watching enabled" if VERBOSE
   log_file_path = "#{apps_dir}/..//logs/mule_ee.log"
   Thread.new do
-    # TODO: This wont work on windows gem 'file-tail' could be an options
+    # TODO: This wont work on windows, gem 'file-tail' could be an options
     Open3.popen3("tail -F #{log_file_path}") do |stdin, stdout, stderr, thread|
       stdout.each do |line|
         if match_data = line.match(/\* Started app ['"]([^'"]+)['"]/)
