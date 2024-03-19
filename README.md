@@ -53,14 +53,14 @@ This enables you to see your changes reflected in the running application almost
 When MULE_HOME is not set, or you wish to deploy to a different directory, use the --apps-dir option:
 
 ```
-mule-reactor --apps-dir /custom/path/to/mule/apps
+mule-reactor --apps-dir /Applications/AnypointStudio.app/Contents/Eclipse/plugins/org.mule.tooling.server.4.4.0.ee_7.11.0.202401311900/mule/apps
 ```
 
 
 ### Specifying a Custom Projects Directory
 If you want to monitor a specific project or a directory containing multiple projects, use the --projects-dir option:
 ```
-mule-reactor --projects-dir /path/to/your/projects
+mule-reactor --projects-dir ~/projects/mule
 ```
 
 ### Enabling Notifications
@@ -69,9 +69,10 @@ To receive notifications for important events such as deployments, enable notifi
 ```
 mule-reactor --notification
 ```
+See below for how to setup Notifications
 
 ### Monitoring Deployment Status
-If you want to monitor the deployment status by tailing the server log and receive notifications on the deployment status, use the -d or --watch-deployments option. Note that notifications must be enabled for this feature to work, and it might not work on Windows due to the use of tailing log files:
+If you want to monitor the deployment status by tailing the server log and receive notifications on the deployment status, use the -d or --watch-deployments option. Note that notifications must be enabled for this feature to work, and it might not work on Windows due to the use of tail command:
 
 ```
 mule-reactor --notification --watch-deployments
@@ -140,23 +141,23 @@ If everything is set up correctly, you should see a system notification with you
 
 ### Optional Configuration
 
-To further enhance your development experience with MuleReactor, consider applying the following optional configurations:
+To further enhance and simplyfy your development experience with MuleReactor, consider applying the following optional configurations:
 
 1. **Set `MULE_HOME` Environment Variable**: Setting this environment variable eliminates the need to specify the path to the Mule installation each time you start the script. This can be done by adding the following to your `.bashrc`, `.bash_profile`, or equivalent file on your operating system:
    ```bash
-   export MULE_HOME=/path/to/your/mule/installation
+   export MULE_HOME=/Applications/AnypointStudio.app/Contents/Eclipse/plugins/org.mule.tooling.server.4.4.0.ee_7.11.0.202401311900/mule
    ```
 
-Replace /path/to/your/mule/installation with the actual path to your Mule runtime installation.
+Replace /Applications/AnypointStudio.app/Contents/Eclipse/plugins/org.mule.tooling.server.4.4.0.ee_7.11.0.202401311900/mule with the actual path to your Mule runtime installation. 
 
-2. Update log4j2.xml for Instant Logging Configuration: By adding a monitorInterval attribute to your log4j2.xml configuration, you can make changes to logging levels and formats without needing to redeploy your application. Add the following within the <Configuration> tag:
+2. **Update log4j2.xml for Instant Logging Configuration**: By adding a monitorInterval attribute to your log4j2.xml configuration, you can make changes to logging levels and formats without needing to redeploy your application. Add the following within the <Configuration> tag:
 xml
 ```
 <Configuration monitorInterval="10">
 ```
 This setting tells Mule to check for changes in the log4j2.xml file every 10 seconds.
 
-3. Configure Mule to Detect Hot Deploys Faster: Speed up the interval at which Mule checks for changes and hot deploys applications by adding the
+3. **Configure Mule to Detect Hot Deploys Faster:** Speed up the interval at which Mule checks for changes and hot deploys applications by adding the
    ``` -Dmule.launcher.changeCheckInterval=500 ```
    argument to your Run Configuration. This sets the check interval to 500 milliseconds. If you're using Anypoint Studio, you can add this under Run > Run Configurations..., selecting your application's configuration, and then adding it to the VM Arguments section.
 Applying these optional configurations will streamline your development process, making it more efficient and responsive to changes.
@@ -173,9 +174,6 @@ While MuleReactor aims to streamline the development process by enabling automat
 - **Hot Deploy Reliability**: MuleReactor significantly improves the developer experience by reducing the time between making a change and seeing it reflected in the running application. However, it's not a silver bullet. Hot deployment, by its nature, can sometimes fail or lead to unexpected behaviors due to the complexities of application state and runtime management. This script might also introduce unknown behaviors that are difficult to predict due to the vast variety of Mule applications and configurations.
 
 - **Troubleshooting Strange Behaviors**: If you encounter odd or unexpected behavior with your application while using MuleReactor, the recommended approach is to perform a normal (cold) deployment of your application and then let MuleReactor handle subsequent hot deployments. This ensures that your application is in a known good state before MuleReactor takes over the synchronization of file changes for hot deployment.
-
-Remember, MuleReactor is a development tool designed to enhance productivity and is most effective when used within the context of its limitations and with an understanding of its operational behavior.
-
 
 
 ## Contributing
