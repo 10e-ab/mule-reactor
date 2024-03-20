@@ -26,6 +26,7 @@ It listens for file changes in your Mule projects and automatically deploys the 
 ```
 gem install listen
 gem install filewatcher
+gem install diffy
 ```
 3. Add mule-reactor to you PATH
 
