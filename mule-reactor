@@ -10,6 +10,7 @@ require 'ostruct'
 require 'filewatcher'
 require 'open3'
 require 'diffy'
+require 'pathname'
 
 
 # TODO/Ideas
@@ -17,6 +18,8 @@ require 'diffy'
 # * Document the new formatting and whitespace feature
 # * There is a lot of options/flags. Maybe remove some, negate others or add a -s --sensible for sensible defaults.
 # * Create a jruby/java version that can be used on sites that don't allow ruby
+# * Make a distinction between VERBOSE and DEBUG
+# * If the list of changes contains a pom.xml and that triggers a rebuild, we should not hot deploy
 
 # Initialize options with default values
 options = OpenStruct.new(verbose: false, watch_pom: false, notification: false, ignore_formatting: false,ignore_blank_lines: false,ignore_whitespace: false, watch_deployments: false,projects_dir: Dir.pwd, apps_dir: "#{ENV['MULE_HOME']}/apps")
@@ -141,7 +144,9 @@ def ignore_file?(file)
 end
 
 # This will trigger a redeploy
-def rebuild_mule_artifact(project_dir,app_dir)
+def rebuild_mule_artifact(project_dir,app_dir,notification)
+  project_name=File.basename(project_dir.chomp('/'))
+  send_notification('🔄', "Re-deploying: #{project_name}")
   file_path = "#{app_dir}/META-INF/mule-artifact/mule-artifact.json"
   json_data = File.read(file_path)
   data = JSON.parse(json_data)
@@ -218,7 +223,9 @@ def send_notification(title, message)
 end
 
 def app_deployed?(app_dir)
-  if Dir.exist?(app_dir)
+  app_name = Pathname.new(app_dir).basename.to_s
+  anchor_file=File.join(app_dir, '../' ,app_name++'-anchor.txt')
+  if Dir.exist?(app_dir) && File.exist?(anchor_file)
     return true
   else
     puts "No app deployed in: #{app_dir} Will not update" if VERBOSE
@@ -292,7 +299,7 @@ def significant_changes?(updated_file,current_file,ignore_formatting,ignore_whit
 end
 
 
-def watch_mule_and_resources_listener(apps_dir,projects_dir,ignore_formatting,ignore_whitespace,ignore_blank_lines)
+def watch_mule_and_resources_listener(apps_dir,projects_dir,ignore_formatting,ignore_whitespace,ignore_blank_lines,notification)
   listener = Listen.to(*watch_dirs(projects_dir)) do |modified, added, removed|
     puts "Changes detected" if VERBOSE
 
@@ -315,8 +322,9 @@ def watch_mule_and_resources_listener(apps_dir,projects_dir,ignore_formatting,ig
 
       if log4j2_file?(file) && contains_monitor_interval?(file)
         puts "Skipping forced re-deploy because log4j2.xml contains monitorInterval"
-      elsif resources_file?(file)
-        rebuild_mule_artifact(extract_project_root_from_path(file),app_dir)
+      # elsif resources_file?(file)
+      else
+        rebuild_mule_artifact(extract_project_root_from_path(file),app_dir,notification)
       end
       puts "Updated: #{file}" if VERBOSE
     end
@@ -332,7 +340,7 @@ def watch_mule_and_resources_listener(apps_dir,projects_dir,ignore_formatting,ig
 
       FileUtils.cp(file, destination_dir, noop: false, verbose: VERBOSE)
       puts "Added: #{file} in #{destination_dir}"
-      rebuild_mule_artifact(extract_project_root_from_path(file),app_dir)
+      rebuild_mule_artifact(extract_project_root_from_path(file),app_dir,notification)
     end
 
     removed.each do |file|
@@ -340,11 +348,12 @@ def watch_mule_and_resources_listener(apps_dir,projects_dir,ignore_formatting,ig
 
       app_dir = "#{apps_dir}/#{extract_project_name_from_filepath(file)}"
       destination_dir = "#{apps_dir}/#{extract_project_name_from_filepath(file)}#{app_sub_dirs(file)}"
+      next unless app_deployed?(app_dir)
 
       delete_file="#{destination_dir}/#{File.basename(file)}"
       FileUtils.rm(delete_file,noop: false, verbose: VERBOSE)
       puts "Removed: #{delete_file}"
-      rebuild_mule_artifact(extract_project_root_from_path(file),app_dir)
+      rebuild_mule_artifact(extract_project_root_from_path(file),app_dir,notification)
     end
   end
   listener.start
@@ -363,6 +372,8 @@ def watch_pom_files(projects_dir,apps_dir,notification)
       current_pom_state = {}
       changes.each do |filename, event|
         next if ignore_file?(filename)
+        app_dir = "#{apps_dir}/#{extract_project_name_from_pom(filename)}"
+        next unless app_deployed?(app_dir)
         case event.to_s
         when 'updated'
           puts 'POM file updated'
@@ -409,7 +420,7 @@ def watch_deployments(apps_dir)
 end
 
 def run(options)
-  watch_mule_and_resources_listener(options.apps_dir,options.projects_dir,options.ignore_formatting,options.ignore_whitespace,options.ignore_blank_lines)
+  watch_mule_and_resources_listener(options.apps_dir,options.projects_dir,options.ignore_formatting,options.ignore_whitespace,options.ignore_blank_lines,options.notification)
   watch_pom_files(options.projects_dir,options.apps_dir,options.notification) if options.watch_pom
   watch_deployments(options.apps_dir) if options.watch_deployments && options.notification
 
