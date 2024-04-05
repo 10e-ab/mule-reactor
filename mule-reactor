@@ -307,10 +307,11 @@ def watch_mule_and_resources_listener(apps_dir,projects_dir,ignore_formatting,ig
       next if ignore_file?(file)
 
       app_dir = "#{apps_dir}/#{extract_project_name_from_filepath(file)}"
+      next unless app_deployed?(app_dir)
+
       destination_dir = "#{app_dir}/#{app_sub_dirs(file)}"
       create_destination_sub_dirs_if_missing(destination_dir)
       puts "Destination dir #{destination_dir}" if VERBOSE
-      next unless app_deployed?(app_dir)
 
       unless significant_changes?(file,"#{destination_dir}/#{File.basename(file)}",ignore_formatting,ignore_whitespace,ignore_blank_lines)
         puts "No significant change, will not update"
@@ -347,9 +348,9 @@ def watch_mule_and_resources_listener(apps_dir,projects_dir,ignore_formatting,ig
       next if ignore_file?(file)
 
       app_dir = "#{apps_dir}/#{extract_project_name_from_filepath(file)}"
-      destination_dir = "#{apps_dir}/#{extract_project_name_from_filepath(file)}#{app_sub_dirs(file)}"
       next unless app_deployed?(app_dir)
 
+      destination_dir = "#{apps_dir}/#{extract_project_name_from_filepath(file)}#{app_sub_dirs(file)}"
       delete_file="#{destination_dir}/#{File.basename(file)}"
       FileUtils.rm(delete_file,noop: false, verbose: VERBOSE)
       puts "Removed: #{delete_file}"
