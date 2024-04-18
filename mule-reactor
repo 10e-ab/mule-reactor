@@ -230,7 +230,7 @@ end
 def app_deployed?(app_dir)
   app_name = Pathname.new(app_dir).basename.to_s
   anchor_file=File.join(app_dir, '../' ,app_name++'-anchor.txt')
-  if Dir.exist?(app_dir) && File.exist?(anchor_file)
+  if Dir.exist?(app_dir)
     return true
   else
     puts "No app deployed in: #{app_dir} Will not update" if VERBOSE
