@@ -305,6 +305,19 @@ end
 
 
 def watch_mule_and_resources_listener(apps_dir,projects_dir,ignore_formatting,ignore_whitespace,ignore_blank_lines,notification)
+
+  unless Dir.exist?(apps_dir)
+    puts "Directory #{apps_dir} does not exist"
+    puts "Make sure that MULE_HOME is set and points to an existing mule-server directory, or specify the --apps-dir script option"
+    exit 1
+  end
+
+  unless Dir.exist?(projects_dir)
+    puts "Directory #{projects_dir} does not exist"
+    puts "Make sure that --project-dir points to an existing directory"
+    exit 1
+  end
+
   listener = Listen.to(*watch_dirs(projects_dir)) do |modified, added, removed|
     puts "Changes detected" if VERBOSE
 
