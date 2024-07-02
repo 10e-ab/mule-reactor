@@ -206,7 +206,7 @@ end
 def rebuild_project(pom_file,apps_dir,notification)
   project_root=File.dirname(pom_file)
   project_name=extract_project_name_from_pom(pom_file)
-  send_notification('🔄', "Rebuilding: #{project_name}") if notification
+  send_notification('🛠️', "Rebuilding: #{project_name}") if notification
   # TODO: This wont work on windows
   # TODO: Make the build command configurable
   IO.popen("cd #{project_root};mvn clean package -DskipTests && cp target/#{project_name}*.jar #{apps_dir}/#{project_name}.jar") do |io|
@@ -216,10 +216,10 @@ def rebuild_project(pom_file,apps_dir,notification)
   exit_status = $?.exitstatus
   if exit_status == 0
     puts "Maven build executed successfully, redeploying app #{project_name}"
-    send_notification('✅', "Build: #{project_name} succeeded") if notification
+    send_notification('🛠️ ✅', "Build: #{project_name} succeeded") if notification
   else
     puts "Maven build failed with exit status #{exit_status}"
-    send_notification('❌', "Build: #{project_name} failed") if notification
+    send_notification('🛠️ ❌', "Build: #{project_name} failed") if notification
   end
 end
 
