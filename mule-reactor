@@ -151,7 +151,7 @@ end
 # This will trigger a redeploy
 def rebuild_mule_artifact(project_dir,app_dir,notification)
   project_name=File.basename(project_dir.chomp('/'))
-  send_notification('🔄', "Re-deploying: #{project_name}")
+  send_notification('🔄', "Re-deploying: #{project_name}") if notification
   file_path = "#{app_dir}/META-INF/mule-artifact/mule-artifact.json"
   json_data = File.read(file_path)
   data = JSON.parse(json_data)
@@ -429,10 +429,10 @@ def watch_deployments(apps_dir)
       stdout.each do |line|
         if match_data = line.match(/\* Started app ['"]([^'"]+)['"]/)
           app_name = match_data[1]
-          send_notification('✅', "Deployment: #{app_name} succeeded")
+          send_notification('✅', "Deployment: #{app_name} succeeded") if notification
         elsif match_data = line.match(/DeploymentException: Failed to deploy artifact \[([^\]]+)\]/)
           app_name = match_data[1]
-          send_notification('❌', "Deployment: #{app_name} failed")
+          send_notification('❌', "Deployment: #{app_name} failed") if notification
         end
       end
     end
