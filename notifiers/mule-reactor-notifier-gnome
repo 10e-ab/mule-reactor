@@ -1,0 +1,36 @@
+#!/bin/bash
+#
+# Notifier to use with Gnome Shell / Ubuntu.
+# We can not use notify-send directly since notify-osd ignores timeout by design
+#  see https://bugs.launchpad.net/ubuntu/+source/notify-osd/+bug/390508
+# instead we use gbus call directly to create and close the notification.
+
+NOTIFY_ARGS=(--session
+             --dest org.freedesktop.Notifications
+             --object-path /org/freedesktop/Notifications)
+
+APP_NAME=mule-reactor
+REPLACE_ID=0
+ICON=
+SUMMARY=$1
+BODY=$2
+actions="[]"
+hints='{"urgency": <byte 1>}'
+EXPIRE_TIME=5000
+
+
+parse_notification_id(){
+    sed 's/(uint32 \([0-9]\+\),)/\1/g'
+}
+
+# Display the notification
+NOTIFICATION_ID=$(gdbus call "${NOTIFY_ARGS[@]}"  \
+                            --method org.freedesktop.Notifications.Notify \
+                            -- \
+                            "$APP_NAME" "$REPLACE_ID" "$ICON" "$SUMMARY" "$BODY" \
+                            "${actions}" "${hints}" "int32 $EXPIRE_TIME" \
+                          | parse_notification_id)
+
+# Sleep and then close the notification
+SLEEP_TIME="$( LC_NUMERIC=C printf %f "${EXPIRE_TIME}e-3" )"
+( sleep "$SLEEP_TIME" ; gdbus call "${NOTIFY_ARGS[@]}"  --method org.freedesktop.Notifications.CloseNotification "$NOTIFICATION_ID" >/dev/null ) &
