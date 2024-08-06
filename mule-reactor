@@ -420,7 +420,7 @@ def watch_pom_files(projects_dir,apps_dir,notification)
   end
 end
 
-def watch_deployments(apps_dir,notification)
+def watch_deployments(apps_dir, notification)
   puts "Deployment watching enabled" if VERBOSE
   log_file_path = "#{apps_dir}/../logs/mule_ee.log"
   Thread.new do
