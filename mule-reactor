@@ -420,7 +420,7 @@ def watch_pom_files(projects_dir,apps_dir,notification)
   end
 end
 
-def watch_deployments(apps_dir)
+def watch_deployments(apps_dir,notification)
   puts "Deployment watching enabled" if VERBOSE
   log_file_path = "#{apps_dir}/../logs/mule_ee.log"
   Thread.new do
@@ -442,7 +442,7 @@ end
 def run(options)
   watch_mule_and_resources_listener(options.apps_dir,options.projects_dir,options.ignore_formatting,options.ignore_whitespace,options.ignore_blank_lines,options.notification)
   watch_pom_files(options.projects_dir,options.apps_dir,options.notification) if options.watch_pom
-  watch_deployments(options.apps_dir) if options.watch_deployments && options.notification
+  watch_deployments(options.apps_dir,options.notification) if options.watch_deployments && options.notification
 
   puts "Mule apps directory: #{options.apps_dir}"
   puts "Monitoring for changes in: #{options.projects_dir}. Press Ctrl+C to stop."
