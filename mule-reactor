@@ -280,6 +280,9 @@ def significant_changes?(updated_file,current_file,ignore_formatting,ignore_whit
         current_content = File.read(current_file)
         updated_content = File.read(updated_file)
       end
+    else
+      current_content = File.read(current_file)
+      updated_content = File.read(updated_file)
     end
 
 
