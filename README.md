@@ -115,6 +115,11 @@ Look for example notifier scripts in the notifiers folder of the mule-reactor pr
 A script for macOS is provided with mule-reactor. It utilizes terminal-notifier, a command-line tool to send macOS User Notifications.
 ***Note:*** terminal-notifier can be installed via Homebrew with the command brew install terminal-notifier.
 
+##### Linux Gnome Shell based desktop
+
+A script for GNOME Shell based desktop is provided with mule-reactor. It utilizes `gdbus`, a command-line tool that should be included by default.  
+***Note:*** `gdbus` is used instead of notify-send to be able to close the notification. The reason for this is that notify-osd (used in Ubuntu and GNOME Shell) ignores the expiry timer.
+
 ##### Adding Notification Scripts for Other Platforms:
 
 While the provided script caters to macOS users, you can easily create and add your own notification script for other operating systems.
