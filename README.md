@@ -30,6 +30,7 @@ gem install diffy
 gem install open3
 ```
 3. Add mule-reactor to you PATH
+4. Make sure that Build Automatically is disabled in Anypoint Platform (Project/Build Automatically)
 
 
 ## Usage
