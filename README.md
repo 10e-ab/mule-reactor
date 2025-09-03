@@ -87,6 +87,25 @@ To automatically detect changes in pom.xml files and trigger a rebuild when depe
 mule-reactor --watch-pom
 ```
 
+### Following Symbolic Links
+By default, MuleReactor uses the Listen gem which has limited support for symbolic links. If your project uses symlinks that point to external directories (outside the watched project tree), you can enable full symlink support with the -s or --follow-symlinks option:
+
+```
+mule-reactor --follow-symlinks
+```
+
+When symlink support is enabled, MuleReactor uses a smart hybrid approach:
+- **Listen** (fast filesystem events) continues to watch regular directories and files
+- **Filewatcher** (polling-based) watches only the specific symlinked paths that point to external locations
+
+This ensures optimal performance while supporting external symlinks where needed. Use verbose mode to see which paths are being watched by each system:
+
+```
+mule-reactor --follow-symlinks --verbose
+```
+
+**Common Use Case:** This option is particularly useful when you have API specifications (RAML/OAS files) that are maintained in separate repositories and linked into your Mule projects via symbolic links. For example, if your `src/main/resources/api` directory is a symlink to an externally version-controlled API specification repository, enabling this option will ensure changes to the API specs are detected and hot-deployed.
+
 ### Full Example with Verbose Output
 To start the script with verbose output, monitoring a specific directory for projects, and specifying a custom deployment directory:
 

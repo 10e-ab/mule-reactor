@@ -22,7 +22,7 @@ require 'pathname'
 # * If the list of changes contains a pom.xml and that triggers a rebuild, we should not hot deploy
 
 # Initialize options with default values
-options = OpenStruct.new(verbose: false, watch_pom: false, notification: false, ignore_formatting: false,ignore_blank_lines: false,ignore_whitespace: false, watch_deployments: false,projects_dir: Dir.pwd, apps_dir: "#{ENV['MULE_HOME']}/apps")
+options = OpenStruct.new(verbose: false, watch_pom: false, notification: false, ignore_formatting: true,ignore_blank_lines: true,ignore_whitespace: true, watch_deployments: false,follow_symlinks: false,projects_dir: Dir.pwd, apps_dir: "#{ENV['MULE_HOME']}/apps")
 
 OptionParser.new do |parser|
   parser.banner = "Usage: ruby #{File.basename(__FILE__)} [options]"
@@ -67,6 +67,10 @@ OptionParser.new do |parser|
   parser.on("--apps-dir DIR", "Directory to where the apps should be deployed (default: ENV['MULE_HOME']/apps)") do |dir|
     options.apps_dir = dir
   end
+
+  parser.on("-s", "--follow-symlinks", "Follow symbolic links using hybrid approach (Listen + Filewatcher for external symlinks)") do
+    options.follow_symlinks = true
+  end
 end.parse!
 
 VERBOSE=options.verbose
@@ -77,6 +81,37 @@ end
 
 def remove_trailing_slash(path)
   path.chomp('/')
+end
+
+def detect_symlinks_in_directories(dirs)
+  symlink_paths = []  # The actual symlink paths to watch
+  
+  dirs.each do |dir|
+    next unless Dir.exist?(dir)
+    
+    Find.find(dir) do |path|
+      if File.symlink?(path)
+        target = File.readlink(path)
+        absolute_target = File.expand_path(target, File.dirname(path))
+        watched_dir = File.expand_path(dir)
+        is_external = !absolute_target.start_with?(watched_dir)
+        
+        if is_external
+          # Add the specific symlink path, not the entire parent directory
+          if File.directory?(absolute_target)
+            symlink_paths << path
+          else
+            # For file symlinks, add the parent directory of the symlink
+            symlink_paths << File.dirname(path)
+          end
+        end
+        
+        Find.prune if File.directory?(absolute_target)
+      end
+    end
+  end
+  
+  symlink_paths.uniq
 end
 
 def watch_dirs(projects_dir)
@@ -100,7 +135,10 @@ def extract_project_name_from_pom(pom_file_path)
 end
 
 def extract_project_name_from_filepath(path)
-  pom_file="#{extract_project_root_from_path(path)}/pom.xml"
+  project_root = extract_project_root_from_path(path)
+  return nil unless project_root
+  
+  pom_file="#{project_root}/pom.xml"
   extract_project_name_from_pom(pom_file)
 end
 
@@ -307,8 +345,60 @@ def significant_changes?(updated_file,current_file,ignore_formatting,ignore_whit
 end
 
 
-def watch_mule_and_resources_listener(apps_dir,projects_dir,ignore_formatting,ignore_whitespace,ignore_blank_lines,notification)
+def handle_file_change(file, event, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification)
+  return if ignore_file?(file)
+  
+  project_name = extract_project_name_from_filepath(file)
+  unless project_name
+    puts "WARNING: Could not determine project name for: #{file}" if VERBOSE
+    return
+  end
+  
+  app_dir = "#{apps_dir}/#{project_name}"
+  return unless app_deployed?(app_dir)
+  
+  case event
+  when :modified
+    destination_dir = "#{app_dir}/#{app_sub_dirs(file)}"
+    create_destination_sub_dirs_if_missing(destination_dir)
+    puts "Destination dir #{destination_dir}" if VERBOSE
+    
+    unless significant_changes?(file,"#{destination_dir}/#{File.basename(file)}",ignore_formatting,ignore_whitespace,ignore_blank_lines)
+      puts "No significant change, will not update"
+      return
+    end
+    
+    FileUtils.cp(file, destination_dir, noop: false, verbose: VERBOSE)
+    puts "Updated: #{file} in #{destination_dir}"
+    
+    if log4j2_file?(file) && contains_monitor_interval?(file)
+      puts "Skipping forced re-deploy because log4j2.xml contains monitorInterval"
+    else
+      project_root = extract_project_root_from_path(file)
+      rebuild_mule_artifact(project_root,app_dir,notification) if project_root
+    end
+    puts "Updated: #{file}" if VERBOSE
+    
+  when :added
+    destination_dir = "#{app_dir}/#{app_sub_dirs(file)}"
+    create_destination_sub_dirs_if_missing(destination_dir)
+    
+    FileUtils.cp(file, destination_dir, noop: false, verbose: VERBOSE)
+    puts "Added: #{file} in #{destination_dir}"
+    project_root = extract_project_root_from_path(file)
+    rebuild_mule_artifact(project_root,app_dir,notification) if project_root
+    
+  when :removed
+    destination_dir = "#{app_dir}#{app_sub_dirs(file)}"
+    delete_file="#{destination_dir}/#{File.basename(file)}"
+    FileUtils.rm(delete_file,noop: false, verbose: VERBOSE)
+    puts "Removed: #{delete_file}"
+    project_root = extract_project_root_from_path(file)
+    rebuild_mule_artifact(project_root,app_dir,notification) if project_root
+  end
+end
 
+def watch_mule_and_resources_hybrid(apps_dir,projects_dir,ignore_formatting,ignore_whitespace,ignore_blank_lines,notification,follow_symlinks)
   unless Dir.exist?(apps_dir)
     puts "Directory #{apps_dir} does not exist"
     puts "Make sure that MULE_HOME is set and points to an existing mule-server directory, or specify the --apps-dir script option"
@@ -321,65 +411,70 @@ def watch_mule_and_resources_listener(apps_dir,projects_dir,ignore_formatting,ig
     exit 1
   end
 
-  listener = Listen.to(*watch_dirs(projects_dir)) do |modified, added, removed|
+  dirs = watch_dirs(projects_dir)
+  
+  if follow_symlinks
+    symlink_paths = detect_symlinks_in_directories(dirs)
+    
+    if symlink_paths.any?
+      # Use Listen for all original directories (it will ignore external symlinks)
+      listener = Listen.to(*dirs) do |modified, added, removed|
+        puts "Changes detected (Listen)" if VERBOSE
+        modified.each { |file| handle_file_change(file, :modified, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
+        added.each { |file| handle_file_change(file, :added, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
+        removed.each { |file| handle_file_change(file, :removed, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
+      end
+      listener.start
+      
+      # Use Filewatcher only for the specific symlink paths
+      patterns = symlink_paths.map { |path| "#{path}/**/*" }
+      
+      puts "Detected external symlinks:" if VERBOSE
+      symlink_paths.each do |path|
+        puts "  #{path}" if VERBOSE
+      end
+      
+      Thread.new do
+        puts "Starting Filewatcher for symlink paths with patterns: #{patterns.join(', ')}" if VERBOSE
+        
+        filewatcher = Filewatcher.new(patterns, interval: 0.5)
+        filewatcher.watch do |changes|
+          puts "Changes detected (Filewatcher): #{changes.inspect}" if VERBOSE
+          changes.each do |filename, event|
+            puts "Filewatcher processing: #{event} - #{filename}" if VERBOSE
+            
+            mapped_event = case event
+                          when :created then :added
+                          when :updated then :modified
+                          when :deleted then :removed
+                          else event
+                          end
+            handle_file_change(filename, mapped_event, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification)
+          end
+        end
+      end
+    else
+      puts "No external symlinks detected. Using Listen only." if VERBOSE
+      start_listen_watcher(dirs, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification)
+    end
+  else
+    start_listen_watcher(dirs, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification)
+  end
+end
+
+def start_listen_watcher(dirs, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification)
+  listener = Listen.to(*dirs) do |modified, added, removed|
     puts "Changes detected" if VERBOSE
-
-    modified.each do |file|
-      next if ignore_file?(file)
-
-      app_dir = "#{apps_dir}/#{extract_project_name_from_filepath(file)}"
-      next unless app_deployed?(app_dir)
-
-      destination_dir = "#{app_dir}/#{app_sub_dirs(file)}"
-      create_destination_sub_dirs_if_missing(destination_dir)
-      puts "Destination dir #{destination_dir}" if VERBOSE
-
-      unless significant_changes?(file,"#{destination_dir}/#{File.basename(file)}",ignore_formatting,ignore_whitespace,ignore_blank_lines)
-        puts "No significant change, will not update"
-        next
-      end
-
-      FileUtils.cp(file, destination_dir, noop: false, verbose: VERBOSE)
-      puts "Updated: #{file} in #{destination_dir}"
-
-      if log4j2_file?(file) && contains_monitor_interval?(file)
-        puts "Skipping forced re-deploy because log4j2.xml contains monitorInterval"
-      # elsif resources_file?(file)
-      else
-        rebuild_mule_artifact(extract_project_root_from_path(file),app_dir,notification)
-      end
-      puts "Updated: #{file}" if VERBOSE
-    end
-
-    added.each do |file|
-      next if ignore_file?(file)
-
-      app_dir = "#{apps_dir}/#{extract_project_name_from_filepath(file)}"
-      next unless app_deployed?(app_dir)
-
-
-      destination_dir = "#{app_dir}/#{app_sub_dirs(file)}"
-      create_destination_sub_dirs_if_missing(destination_dir)
-
-      FileUtils.cp(file, destination_dir, noop: false, verbose: VERBOSE)
-      puts "Added: #{file} in #{destination_dir}"
-      rebuild_mule_artifact(extract_project_root_from_path(file),app_dir,notification)
-    end
-
-    removed.each do |file|
-      next if ignore_file?(file)
-
-      app_dir = "#{apps_dir}/#{extract_project_name_from_filepath(file)}"
-      next unless app_deployed?(app_dir)
-
-      destination_dir = "#{apps_dir}/#{extract_project_name_from_filepath(file)}#{app_sub_dirs(file)}"
-      delete_file="#{destination_dir}/#{File.basename(file)}"
-      FileUtils.rm(delete_file,noop: false, verbose: VERBOSE)
-      puts "Removed: #{delete_file}"
-      rebuild_mule_artifact(extract_project_root_from_path(file),app_dir,notification)
-    end
+    modified.each { |file| handle_file_change(file, :modified, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
+    added.each { |file| handle_file_change(file, :added, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
+    removed.each { |file| handle_file_change(file, :removed, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
   end
   listener.start
+end
+
+# Kept for backwards compatibility - redirects to hybrid version
+def watch_mule_and_resources_listener(apps_dir,projects_dir,ignore_formatting,ignore_whitespace,ignore_blank_lines,notification)
+  watch_mule_and_resources_hybrid(apps_dir,projects_dir,ignore_formatting,ignore_whitespace,ignore_blank_lines,notification,false)
 end
 
 def watch_pom_files(projects_dir,apps_dir,notification)
@@ -443,12 +538,13 @@ def watch_deployments(apps_dir, notification)
 end
 
 def run(options)
-  watch_mule_and_resources_listener(options.apps_dir,options.projects_dir,options.ignore_formatting,options.ignore_whitespace,options.ignore_blank_lines,options.notification)
+  watch_mule_and_resources_hybrid(options.apps_dir,options.projects_dir,options.ignore_formatting,options.ignore_whitespace,options.ignore_blank_lines,options.notification,options.follow_symlinks)
   watch_pom_files(options.projects_dir,options.apps_dir,options.notification) if options.watch_pom
   watch_deployments(options.apps_dir,options.notification) if options.watch_deployments && options.notification
 
   puts "Mule apps directory: #{options.apps_dir}"
   puts "Monitoring for changes in: #{options.projects_dir}. Press Ctrl+C to stop."
+  puts "Symlink following: #{options.follow_symlinks ? 'enabled (hybrid mode)' : 'disabled'}" if VERBOSE
   sleep
 end
 
