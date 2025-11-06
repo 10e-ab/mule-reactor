@@ -20,6 +20,9 @@ require 'pathname'
 # * Create a jruby/java version that can be used on sites that don't allow ruby
 # * Make a distinction between VERBOSE and DEBUG
 # * If the list of changes contains a pom.xml and that triggers a rebuild, we should not hot deploy
+# * Add test if apps folder exists
+# * If a build failes, we should try to rebuild instead of redeploy
+# * There is a bug that causes rebuilds when pom.xml are updated
 
 # Initialize options with default values
 options = OpenStruct.new(verbose: false, watch_pom: false, notification: false, ignore_formatting: true,ignore_blank_lines: true,ignore_whitespace: true, watch_deployments: false,follow_symlinks: false,projects_dir: Dir.pwd, apps_dir: "#{ENV['MULE_HOME']}/apps")
@@ -48,16 +51,16 @@ OptionParser.new do |parser|
     options.watch_pom = true
   end
 
-  parser.on("-f", "--ignore-formatting", "Ignores changes in formatting (e.g., indentation, line breaks) for JSON and XML files.") do
-    options.ignore_formatting = true
+  parser.on("--no-ignore-formatting", "Considers changes in formatting for JSON and XML files.") do
+    options.ignore_formatting = false
   end
 
-  parser.on("-w", "--ignore-whitespace", "Ignores whitespace changes (e.g., spaces, tabs, new lines) in all file types.") do
-    options.ignore_whitespace = true
+  parser.on("--no-ignore-whitespace", "Considers whitespace changes in all file types.") do
+    options.ignore_whitespace = false
   end
 
-  parser.on("-B", "--ignore-blank-lines", "Ignores blank lines in all file types during comparison.") do
-    options.ignore_blank_lines = true
+  parser.on("--no-ignore-blank-lines", "Considers blank lines in all file types during comparison.") do
+    options.ignore_blank_lines = false
   end
 
   parser.on("--projects-dir DIR", "Directory of projects (default: current directory)") do |dir|
@@ -216,17 +219,34 @@ end
 def hash_dependencies(xml_content)
   document = REXML::Document.new(xml_content)
   dependencies_text = ""
-  document.elements.to_a("//dependency/*").sort_by {|d| d.to_s}.each do |dependency|
-    dependencies_text+= dependency.to_s
+  formatted_content = ""
+
+  # Group dependency elements by parent dependency
+  document.elements.each("//dependency") do |dependency|
+    formatted_content += "\n<dependency>\n"
+    dependency.elements.sort_by {|e| e.to_s}.each do |element|
+      formatted_content += "  #{element}\n"
+      dependencies_text += element.to_s
+    end
+    formatted_content += "</dependency>\n"
   end
 
   # Since dependencies can be defined in the parent pom we include any changes to the parent
   parent_text = ""
-  document.elements.to_a("//parent/*").sort_by {|d| d.to_s}.each do |parent|
-    parent_text+= parent.to_s
+  document.elements.each("//parent") do |parent|
+    formatted_content += "\n<parent>\n"
+    parent.elements.sort_by {|e| e.to_s}.each do |element|
+      formatted_content += "  #{element}\n"
+      parent_text += element.to_s
+    end
+    formatted_content += "</parent>\n"
   end
 
-  Digest::SHA256.hexdigest(dependencies_text++parent_text)
+  combined_text = dependencies_text + parent_text
+  {
+    hash: Digest::SHA256.hexdigest(combined_text),
+    content: formatted_content
+  }
 end
 
 def initialize_pom_state(projects_dir)
@@ -235,8 +255,7 @@ def initialize_pom_state(projects_dir)
   (Dir.glob("#{projects_dir}/pom.xml") + Dir.glob("#{projects_dir}/*/pom.xml")).each do |pom_file|
     next if ignore_file?(pom_file)
     xml_content = File.read(pom_file)
-    dependencies_hash = hash_dependencies(xml_content)
-    pom_state[pom_file] = dependencies_hash
+    pom_state[pom_file] = hash_dependencies(xml_content)
   end
   pom_state
 end
@@ -576,14 +595,18 @@ def watch_pom_files(projects_dir,apps_dir,notification)
               when 'updated'
                 puts 'POM file updated'
                 xml_content = File.read(filename)
-                dependencies_hash = hash_dependencies(xml_content)
-                current_pom_state[filename] = dependencies_hash
-                puts "Last pom state: #{pom_state}" if VERBOSE
+                new_state = hash_dependencies(xml_content)
+                current_pom_state[filename] = new_state
+                puts "Last pom state hash: #{pom_state[filename][:hash]}" if VERBOSE
                 # This should not really happen, could probably be removed
                 if pom_state[filename] == nil
-                  puts "Change tracking new pom file: #{filename}" 
-                elsif pom_state[filename] != dependencies_hash
+                  puts "Change tracking new pom file: #{filename}"
+                elsif pom_state[filename][:hash] != new_state[:hash]
                   puts "Change detected in dependencies of pom file: #{filename}"
+                  if VERBOSE
+                    diff = Diffy::Diff.new(pom_state[filename][:content], new_state[:content], :allow_empty_diff => true, :include_plus_and_minus_in_html => false)
+                    puts "POM Diff:\n#{diff}"
+                  end
                   rebuild_project(filename,apps_dir,notification)
                 end
               when 'created'
