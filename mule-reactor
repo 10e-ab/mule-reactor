@@ -11,6 +11,7 @@ require 'filewatcher'
 require 'open3'
 require 'diffy'
 require 'pathname'
+require 'stringio'
 
 
 # TODO/Ideas
@@ -25,7 +26,7 @@ require 'pathname'
 # * There is a bug that causes rebuilds when pom.xml are updated
 
 # Initialize options with default values
-options = OpenStruct.new(verbose: false, watch_pom: false, notification: false, ignore_formatting: true,ignore_blank_lines: true,ignore_whitespace: true, watch_deployments: false,follow_symlinks: false,projects_dir: Dir.pwd, apps_dir: "#{ENV['MULE_HOME']}/apps")
+options = OpenStruct.new(verbose: false, watch_pom: false, notification: false, ignore_formatting: true,ignore_blank_lines: true,ignore_whitespace: true, watch_deployments: false,follow_symlinks: false,projects_dir: Dir.pwd, apps_dir: "#{ENV['MULE_HOME']}/apps", symlink_interval: 1.1, pom_interval: 1.1)
 
 OptionParser.new do |parser|
   parser.banner = "Usage: ruby #{File.basename(__FILE__)} [options]"
@@ -73,6 +74,14 @@ OptionParser.new do |parser|
 
   parser.on("-s", "--follow-symlinks", "Follow symbolic links using hybrid approach (Listen + Filewatcher for external symlinks)") do
     options.follow_symlinks = true
+  end
+
+  parser.on("--symlink-interval SECONDS", Float, "Polling interval for symlink watcher in seconds (default: 1.1)") do |interval|
+    options.symlink_interval = interval
+  end
+
+  parser.on("--pom-interval SECONDS", Float, "Polling interval for pom.xml watcher in seconds (default: 1.1)") do |interval|
+    options.pom_interval = interval
   end
 end.parse!
 
@@ -328,8 +337,12 @@ def significant_changes?(updated_file,current_file,ignore_formatting,ignore_whit
         current_document = REXML::Document.new(File.new(current_file))
         formatter = REXML::Formatters::Pretty.new(2)
         formatter.compact = true
-        formatter.write(updated_document, updated_content)
-        formatter.write(current_document, current_content)
+        updated_io = StringIO.new
+        current_io = StringIO.new
+        formatter.write(updated_document, updated_io)
+        formatter.write(current_document, current_io)
+        updated_content = updated_io.string
+        current_content = current_io.string
       when ".json"
         updated_content = JSON.pretty_generate(JSON.parse(File.read(updated_file)))
         current_content = JSON.pretty_generate(JSON.parse(File.read(current_file)))
@@ -439,7 +452,7 @@ def handle_file_change(file, event, apps_dir, ignore_formatting, ignore_whitespa
   end
 end
 
-def watch_mule_and_resources_hybrid(apps_dir,projects_dir,ignore_formatting,ignore_whitespace,ignore_blank_lines,notification,follow_symlinks)
+def watch_mule_and_resources_hybrid(apps_dir,projects_dir,ignore_formatting,ignore_whitespace,ignore_blank_lines,notification,follow_symlinks,symlink_interval)
   unless Dir.exist?(apps_dir)
     puts "Directory #{apps_dir} does not exist"
     puts "Make sure that MULE_HOME is set and points to an existing mule-server directory, or specify the --apps-dir script option"
@@ -485,7 +498,7 @@ def watch_mule_and_resources_hybrid(apps_dir,projects_dir,ignore_formatting,igno
           begin
             puts "[#{Time.now}] Starting Filewatcher thread for symlink paths..." if VERBOSE
             
-            filewatcher = Filewatcher.new(@filewatcher_patterns, interval: 0.5)
+            filewatcher = Filewatcher.new(@filewatcher_patterns, interval: symlink_interval)
             filewatcher.watch do |changes|
               @filewatcher_last_detection = Time.now
               puts "[#{Time.now}] Changes detected (Filewatcher): #{changes.inspect}" if VERBOSE
@@ -560,10 +573,10 @@ end
 
 # Kept for backwards compatibility - redirects to hybrid version
 def watch_mule_and_resources_listener(apps_dir,projects_dir,ignore_formatting,ignore_whitespace,ignore_blank_lines,notification)
-  watch_mule_and_resources_hybrid(apps_dir,projects_dir,ignore_formatting,ignore_whitespace,ignore_blank_lines,notification,false)
+  watch_mule_and_resources_hybrid(apps_dir,projects_dir,ignore_formatting,ignore_whitespace,ignore_blank_lines,notification,false,1.1)
 end
 
-def watch_pom_files(projects_dir,apps_dir,notification)
+def watch_pom_files(projects_dir,apps_dir,notification,pom_interval)
   # We use filewatcher, that polls for changes, because using eventbase file listenter is to slow for large folder structures with lots of changes going on, 
   # for example when we run mvn clean package.
   # I have not found an platform independent filewatcher the handles ignore in an efficent way
@@ -578,7 +591,7 @@ def watch_pom_files(projects_dir,apps_dir,notification)
     @pom_watcher_thread = Thread.new do
       begin
         puts "[#{Time.now}] Starting POM file watcher thread..." if VERBOSE
-        pom_file_watcher = Filewatcher.new(patterns, exclude: ['target'], interval: 1.1)
+        pom_file_watcher = Filewatcher.new(patterns, exclude: ['target'], interval: pom_interval)
         
         pom_file_watcher.watch do |changes|
           @pom_watcher_last_detection = Time.now
@@ -676,8 +689,8 @@ def watch_deployments(apps_dir, notification)
 end
 
 def run(options)
-  watch_mule_and_resources_hybrid(options.apps_dir,options.projects_dir,options.ignore_formatting,options.ignore_whitespace,options.ignore_blank_lines,options.notification,options.follow_symlinks)
-  watch_pom_files(options.projects_dir,options.apps_dir,options.notification) if options.watch_pom
+  watch_mule_and_resources_hybrid(options.apps_dir,options.projects_dir,options.ignore_formatting,options.ignore_whitespace,options.ignore_blank_lines,options.notification,options.follow_symlinks,options.symlink_interval)
+  watch_pom_files(options.projects_dir,options.apps_dir,options.notification,options.pom_interval) if options.watch_pom
   watch_deployments(options.apps_dir,options.notification) if options.watch_deployments && options.notification
 
   puts "Mule apps directory: #{options.apps_dir}"
