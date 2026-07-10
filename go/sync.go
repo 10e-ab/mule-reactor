@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"unicode"
 )
 
 func ensureTrailingSlash(path string) string {
@@ -141,9 +140,11 @@ func createDestinationSubDirsIfMissing(destinationDir string) {
 	}
 }
 
-// significantChanges tests if the changes are more than formatting or whitespace
+// significantChanges tests if the changes are more than XML/JSON formatting.
+// Every other file type is compared exactly: whitespace can be semantically
+// meaningful in .properties or DataWeave files, so it is never ignored.
 func significantChanges(updatedFile, currentFile string) bool {
-	if !opts.IgnoreFormatting && !opts.IgnoreWhitespace && !opts.IgnoreBlankLines {
+	if !opts.IgnoreFormatting {
 		return true
 	}
 	updatedInfo, err := os.Stat(updatedFile)
@@ -171,35 +172,36 @@ func significantChanges(updatedFile, currentFile string) bool {
 	}
 	updatedContent := string(updatedData)
 	currentContent := string(currentData)
-	if opts.IgnoreFormatting {
+	switch strings.ToLower(filepath.Ext(updatedFile)) {
+	case ".xml":
 		if opts.Verbose {
-			fmt.Println("Formatting XML and JSON before diff")
+			fmt.Println("Canonicalizing XML before comparison")
 		}
-		switch strings.ToLower(filepath.Ext(updatedFile)) {
-		case ".xml":
-			u, uerr := canonicalizeXML(updatedData)
-			c, cerr := canonicalizeXML(currentData)
-			if uerr != nil || cerr != nil {
-				fmt.Printf("Error parsing XML: %v\n", firstError(uerr, cerr))
-				// An unparseable XML file (e.g. a half-written save) is
-				// treated as not significant, so the last good deployed
-				// copy is kept
-				return false
-			}
-			updatedContent, currentContent = u, c
-		case ".json":
-			u, uerr := canonicalizeJSON(updatedData)
-			c, cerr := canonicalizeJSON(currentData)
-			if uerr != nil || cerr != nil {
-				fmt.Printf("Error parsing JSON: %v\n", firstError(uerr, cerr))
-				return true
-			}
-			updatedContent, currentContent = u, c
+		u, uerr := canonicalizeXML(updatedData)
+		c, cerr := canonicalizeXML(currentData)
+		if uerr != nil || cerr != nil {
+			fmt.Printf("Error parsing XML: %v\n", firstError(uerr, cerr))
+			// An unparseable XML file (e.g. a half-written save) is
+			// treated as not significant, so the last good deployed
+			// copy is kept
+			return false
 		}
+		updatedContent, currentContent = u, c
+	case ".json":
+		if opts.Verbose {
+			fmt.Println("Canonicalizing JSON before comparison")
+		}
+		u, uerr := canonicalizeJSON(updatedData)
+		c, cerr := canonicalizeJSON(currentData)
+		if uerr != nil || cerr != nil {
+			fmt.Printf("Error parsing JSON: %v\n", firstError(uerr, cerr))
+			return true
+		}
+		updatedContent, currentContent = u, c
 	}
-	changed := normalizeForDiff(updatedContent) != normalizeForDiff(currentContent)
+	changed := updatedContent != currentContent
 	if opts.Verbose && changed {
-		fmt.Println("Diff: files differ after normalization")
+		fmt.Println("Diff: files differ after canonicalization")
 	}
 	return changed
 }
@@ -223,30 +225,6 @@ func canonicalizeJSON(data []byte) (string, error) {
 		return "", err
 	}
 	return string(out), nil
-}
-
-// normalizeForDiff applies the equivalent of diff's -w (ignore all
-// whitespace) and -B (ignore blank lines) flags before comparing
-func normalizeForDiff(content string) string {
-	lines := strings.Split(content, "\n")
-	out := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if opts.IgnoreWhitespace {
-			line = strings.Map(func(r rune) rune {
-				if unicode.IsSpace(r) {
-					return -1
-				}
-				return r
-			}, line)
-		}
-		// Like diff -B, only completely empty lines are ignored (with -w
-		// active, whitespace-only lines have already become empty)
-		if opts.IgnoreBlankLines && line == "" {
-			continue
-		}
-		out = append(out, line)
-	}
-	return strings.Join(out, "\n")
 }
 
 // rebuildMuleArtifact rewrites mule-artifact.json, which triggers a redeploy

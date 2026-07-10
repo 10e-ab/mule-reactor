@@ -22,9 +22,32 @@ dependency ([fsnotify](https://github.com/fsnotify/fsnotify)).
 ```
 
 `--apps-dir` defaults to `$MULE_HOME/apps`; `--projects-dir` defaults to the
-current directory. `-p` rebuilds on relevant pom changes, `-n` enables
-notifications, `-d` with `-n` notifies on deployment status, `-s` follows
-symlinks.
+current directory.
+
+Everything else is on by default: notifications, deployment watching,
+pom-triggered rebuilds and symlink following. Opt out with:
+
+- `--no-notification` — no desktop notifications (implies
+  `--no-watch-deployments`)
+- `--no-watch-deployments` — don't tail the server log for deployment status
+- `--no-watch-pom` — don't rebuild on rebuild-worthy pom changes, print a
+  stale-app warning instead
+- `--no-follow-symlinks` — don't follow symlinks out of the project trees
+
+The Ruby version's opt-in flags (`-n`, `-d`, `-p`, `-s` and their long
+forms, plus `--no-ignore-whitespace`/`--no-ignore-blank-lines`) are still
+accepted and ignored, so existing wrapper scripts keep working.
+
+## Rebuilds
+
+A rebuild-worthy pom change runs `mvn clean package -DskipTests` in the
+project root and copies the jar to the apps dir. Set
+`MULE_REACTOR_BUILD_COMMAND` to override the build command; it runs through
+a shell in the project root, so wrappers, extra flags and pipes work:
+
+```
+MULE_REACTOR_BUILD_COMMAND="mvnd clean package -DskipTests -Pdev" mule-reactor
+```
 
 ## Notifications
 
@@ -51,6 +74,16 @@ all follow the Ruby implementation.
 
 Differences:
 
+- **The defaults are inverted.** Ruby's opt-in behaviors (`-n`
+  notifications, `-d` deployment watching, `-p` pom rebuilds, `-s` symlink
+  following) are all on by default here, with `--no-*` flags to opt out.
+  The old opt-in flags are accepted as no-ops.
+- **Whitespace handling is per-file-type instead of flag-driven.** XML and
+  JSON are canonicalized so formatting-only saves don't redeploy; every
+  other file type is compared exactly, because whitespace can be
+  semantically meaningful (`.properties` values, DataWeave). This replaces
+  Ruby's global `diff -w -B` comparison and its
+  `--no-ignore-whitespace`/`--no-ignore-blank-lines` flags.
 - **No polling, and no `--symlink-interval` / `--pom-interval` flags.** The
   Ruby version polls pom.xml files (the Listen gem watches recursively and
   drowns in `target/` churn during builds) and polls external symlinks

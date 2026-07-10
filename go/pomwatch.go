@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -264,16 +265,35 @@ func processPomChange(filename string, states map[string]pomState, statesMu *syn
 		// A full rebuild resolves new dependencies and re-applies Maven resource filtering
 		rebuildProject(filename)
 	} else {
-		fmt.Println("WARNING: The pom change requires a rebuild, the deployed app is now stale. Start with -p/--watch-pom to rebuild automatically, or rebuild manually.")
+		fmt.Println("WARNING: The pom change requires a rebuild, the deployed app is now stale. Start without --no-watch-pom to rebuild automatically, or rebuild manually.")
 	}
+}
+
+const defaultBuildCommand = "mvn clean package -DskipTests"
+
+// buildCommand returns the command that rebuilds a project, honoring the
+// MULE_REACTOR_BUILD_COMMAND override (run through a shell, so pipes,
+// quoting and wrappers like mvnd work)
+func buildCommand() *exec.Cmd {
+	if custom := os.Getenv("MULE_REACTOR_BUILD_COMMAND"); custom != "" {
+		if runtime.GOOS == "windows" {
+			return exec.Command("cmd", "/C", custom)
+		}
+		return exec.Command("sh", "-c", custom)
+	}
+	return exec.Command("mvn", "clean", "package", "-DskipTests")
 }
 
 func rebuildProject(pomFile string) {
 	projectRoot := filepath.Dir(pomFile)
 	projectName := extractProjectNameFromPom(pomFile, false)
 	sendNotification("🛠️", "Rebuilding: "+projectName)
-	// TODO: Make the build command configurable
-	cmd := exec.Command("mvn", "clean", "package", "-DskipTests")
+	command := os.Getenv("MULE_REACTOR_BUILD_COMMAND")
+	if command == "" {
+		command = defaultBuildCommand
+	}
+	fmt.Printf("Running: %s (in %s)\n", command, projectRoot)
+	cmd := buildCommand()
 	cmd.Dir = projectRoot
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

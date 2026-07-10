@@ -16,8 +16,6 @@ type Options struct {
 	WatchPom          bool
 	Notification      bool
 	IgnoreFormatting  bool
-	IgnoreWhitespace  bool
-	IgnoreBlankLines  bool
 	WatchDeployments  bool
 	FollowSymlinks    bool
 	ProjectsDir       string
@@ -35,26 +33,31 @@ func main() {
 
 	flag.BoolVar(&opts.Verbose, "v", false, "Run in verbose mode")
 	flag.BoolVar(&opts.Verbose, "verbose", false, "Run in verbose mode")
-	flag.BoolVar(&opts.Notification, "n", false, "Enable notifications")
-	flag.BoolVar(&opts.Notification, "notification", false, "Enable notifications")
-	flag.BoolVar(&opts.WatchDeployments, "d", false, "Will tail the server-log and notify on deployment status. Notification must be enabled")
-	flag.BoolVar(&opts.WatchDeployments, "watch-deployments", false, "Will tail the server-log and notify on deployment status. Notification must be enabled")
-	flag.BoolVar(&opts.WatchPom, "p", false, "Rebuild when the pom.xml dependencies, properties, profiles or resources change. Without this flag a warning is printed instead")
-	flag.BoolVar(&opts.WatchPom, "watch-pom", false, "Rebuild when the pom.xml dependencies, properties, profiles or resources change. Without this flag a warning is printed instead")
-	flag.BoolVar(&opts.FollowSymlinks, "s", false, "Follow symbolic links by watching the symlink targets directly")
-	flag.BoolVar(&opts.FollowSymlinks, "follow-symlinks", false, "Follow symbolic links by watching the symlink targets directly")
+	noNotification := flag.Bool("no-notification", false, "Disable desktop notifications (implies --no-watch-deployments)")
+	noWatchDeployments := flag.Bool("no-watch-deployments", false, "Do not tail the server log for deployment success/failure notifications")
+	noWatchPom := flag.Bool("no-watch-pom", false, "Do not rebuild when the pom.xml dependencies, properties, profiles or resources change; print a stale-app warning instead")
+	noFollowSymlinks := flag.Bool("no-follow-symlinks", false, "Do not follow symbolic links pointing outside the project source trees")
 	noResourceFiltering := flag.Bool("no-resource-filtering", false, "Disable Maven resource filtering: sync filtered resource files as-is, without substituting ${...} tokens. Pom property/profile/resources changes then no longer trigger rebuilds, only dependency changes do")
-	noIgnoreFormatting := flag.Bool("no-ignore-formatting", false, "Considers changes in formatting for JSON and XML files")
-	noIgnoreWhitespace := flag.Bool("no-ignore-whitespace", false, "Considers whitespace changes in all file types")
-	noIgnoreBlankLines := flag.Bool("no-ignore-blank-lines", false, "Considers blank lines in all file types during comparison")
+	noIgnoreFormatting := flag.Bool("no-ignore-formatting", false, "Treat XML/JSON formatting-only changes as significant (skips content comparison entirely)")
 	flag.StringVar(&opts.ProjectsDir, "projects-dir", wd, "Directory of projects (default: current directory)")
 	flag.StringVar(&opts.AppsDir, "apps-dir", os.Getenv("MULE_HOME")+"/apps", "Directory to where the apps should be deployed (default: $MULE_HOME/apps)")
+
+	// Flags from v1 (and the Ruby version) for behaviors that are now the
+	// default, accepted so existing wrappers keep working
+	var deprecated bool
+	for _, name := range []string{"n", "notification", "d", "watch-deployments", "p", "watch-pom", "s", "follow-symlinks"} {
+		flag.BoolVar(&deprecated, name, false, "Deprecated: this is now the default")
+	}
+	flag.BoolVar(&deprecated, "no-ignore-whitespace", false, "Deprecated: whitespace is now always significant outside XML/JSON formatting")
+	flag.BoolVar(&deprecated, "no-ignore-blank-lines", false, "Deprecated: blank lines are now always significant outside XML/JSON formatting")
 	flag.Parse()
 
+	opts.Notification = !*noNotification
+	opts.WatchDeployments = !*noWatchDeployments && opts.Notification
+	opts.WatchPom = !*noWatchPom
+	opts.FollowSymlinks = !*noFollowSymlinks
 	opts.ResourceFiltering = !*noResourceFiltering
 	opts.IgnoreFormatting = !*noIgnoreFormatting
-	opts.IgnoreWhitespace = !*noIgnoreWhitespace
-	opts.IgnoreBlankLines = !*noIgnoreBlankLines
 
 	opts.ProjectsDir = normalizePath(opts.ProjectsDir)
 	opts.AppsDir = normalizePath(opts.AppsDir)
@@ -78,7 +81,7 @@ func run() {
 	// The pom watcher rebuilds on relevant pom changes with -p/--watch-pom,
 	// and warns about them without it
 	watchPomFiles()
-	if opts.WatchDeployments && opts.Notification {
+	if opts.WatchDeployments {
 		watchDeployments()
 	}
 
