@@ -338,6 +338,9 @@ def dynamic_maven_property(key, project_root, properties)
   when 'git.dirty'
     changes = git_output(project_root, 'status', '--porcelain')
     changes.nil? ? nil : (!changes.empty?).to_s
+  when 'user.name'
+    # Maven resolves ${user.name} from the JVM system property
+    ENV['USER'] || ENV['USERNAME']
   end
 end
 
