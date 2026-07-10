@@ -728,7 +728,7 @@ def watch_mule_and_resources_hybrid(apps_dir,projects_dir,ignore_formatting,igno
 
   unless Dir.exist?(projects_dir)
     puts "Directory #{projects_dir} does not exist"
-    puts "Make sure that --project-dir points to an existing directory"
+    puts "Make sure that --projects-dir points to an existing directory"
     exit 1
   end
 

@@ -94,7 +94,7 @@ func watchMuleAndResources() {
 	}
 	if !dirExists(opts.ProjectsDir) {
 		fmt.Printf("Directory %s does not exist\n", opts.ProjectsDir)
-		fmt.Println("Make sure that --project-dir points to an existing directory")
+		fmt.Println("Make sure that --projects-dir points to an existing directory")
 		os.Exit(1)
 	}
 	if err := startSourceWatcher(); err != nil {
