@@ -11,6 +11,9 @@ import (
 // by a direct exec. Title and message are passed as positional parameters so
 // their content is never shell-parsed.
 func sendNotification(title, message string) {
+	if !opts.Notification {
+		return
+	}
 	if runtime.GOOS == "windows" {
 		exec.Command("cmd", "/C", "mule-reactor-notifier", title, message).Run()
 		return

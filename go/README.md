@@ -57,7 +57,17 @@ Differences:
   both sides of every comparison use the same canonicalizer, so the
   "significant change" answer is the same. As in the Ruby version, an
   unparseable XML file is treated as "no significant change" so a
-  half-written save never clobbers the deployed copy.
+  half-written save never clobbers the deployed copy. JSON saves that only
+  reorder keys are also suppressed (Ruby preserved key order and synced them).
+- **Ant patterns**: in filtered-resource includes/excludes a bare `**`
+  crosses directories (Maven semantics, e.g. `config/**` matches nested
+  files); Ruby's fnmatch treated it as a single path segment.
+- **Deployment log tail** reports only lines written after startup; Ruby's
+  `tail -F` replayed the last 10 lines, producing stale notifications.
+- **Extra robustness**: a watched `src/main/...` root that is deleted and
+  recreated (e.g. by a branch switch) is re-watched automatically, new
+  project directories get their pom.xml tracked without a restart, and a
+  crashed watcher backend restarts itself instead of going silent.
 - **Windows**: the two documented Ruby limits (shelling out for `mvn`, and
   `tail -F` for the deployment log) are native here — `mvn` runs without a
   shell and the log tail is implemented in Go. Windows remains untested.

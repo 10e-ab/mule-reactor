@@ -74,10 +74,13 @@ func hashFilterInputs(root *XMLNode) string {
 	return sha256Hex(content.String())
 }
 
-func pomFileState(data []byte) (pomState, error) {
-	root, err := parseXML(data)
+func pomStateFor(pomFile string) (pomState, error) {
+	root, err := pomDocument(pomFile)
 	if err != nil {
 		return pomState{}, err
+	}
+	if root == nil {
+		return pomState{}, fmt.Errorf("pom.xml does not exist")
 	}
 	hash, content := hashDependencies(root)
 	return pomState{hash: hash, content: content, filterHash: hashFilterInputs(root)}, nil
@@ -100,17 +103,11 @@ func initializePomState(projectsDir string) map[string]pomState {
 	states := map[string]pomState{}
 	pd := removeTrailingSlash(projectsDir)
 	for _, pattern := range []string{pd + "/pom.xml", pd + "/*/pom.xml"} {
-		matches, _ := filepath.Glob(pattern)
-		for _, pomFile := range matches {
-			pomFile = filepath.ToSlash(pomFile)
+		for _, pomFile := range globVisible(pattern, pd) {
 			if ignoreFile(pomFile) {
 				continue
 			}
-			data, err := os.ReadFile(pomFile)
-			if err != nil {
-				continue
-			}
-			if state, err := pomFileState(data); err == nil {
+			if state, err := pomStateFor(pomFile); err == nil {
 				states[pomFile] = state
 			}
 		}
@@ -126,19 +123,25 @@ func watchPomFiles() {
 	if opts.Verbose {
 		fmt.Println("Tracking changes in pom.xml files")
 	}
+	if err := startPomWatcher(); err != nil {
+		fmt.Printf("ERROR: could not start pom watcher: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func startPomWatcher() error {
 	pd := removeTrailingSlash(opts.ProjectsDir)
 	states := initializePomState(pd)
 	var statesMu sync.Mutex
 
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
-		fmt.Printf("ERROR: could not start pom watcher: %v\n", err)
-		return
+		return err
 	}
 	watchList := []string{pd}
 	entries, _ := os.ReadDir(pd)
 	for _, e := range entries {
-		if e.IsDir() && !ignoreFile(pd+"/"+e.Name()+"/") {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") && !ignoreFile(pd+"/"+e.Name()+"/") {
 			watchList = append(watchList, pd+"/"+e.Name())
 		}
 	}
@@ -148,54 +151,63 @@ func watchPomFiles() {
 		}
 	}
 
-	pending := map[string]bool{}
-	var mu sync.Mutex
-	var timer *time.Timer
-
-	process := func() {
-		mu.Lock()
-		batch := make([]string, 0, len(pending))
-		for f := range pending {
-			batch = append(batch, f)
-		}
-		pending = map[string]bool{}
-		timer = nil
-		mu.Unlock()
-		sort.Strings(batch)
+	deb := newDebouncer(debounceDelay, func(batch []string) {
 		if opts.Verbose {
 			fmt.Printf("[%s] POM changes detected: %s\n", time.Now().Format(time.RFC3339), strings.Join(batch, ", "))
 		}
 		for _, filename := range batch {
 			processPomChange(filename, states, &statesMu)
 		}
-	}
+	})
 
 	go func() {
 		for {
 			select {
 			case ev, ok := <-fsw.Events:
 				if !ok {
+					restartPomWatcher(fsw)
 					return
 				}
-				if filepath.Base(ev.Name) != "pom.xml" || ev.Op == fsnotify.Chmod {
+				if ev.Op == fsnotify.Chmod {
 					continue
 				}
-				mu.Lock()
-				pending[filepath.ToSlash(ev.Name)] = true
-				if timer == nil {
-					timer = time.AfterFunc(debounceDelay, process)
-				} else {
-					timer.Reset(debounceDelay)
+				p := filepath.ToSlash(ev.Name)
+				if filepath.Base(p) != "pom.xml" {
+					// A new project directory: watch it so its pom.xml is
+					// tracked without a restart
+					if ev.Op&fsnotify.Create != 0 &&
+						filepath.ToSlash(filepath.Dir(p)) == pd &&
+						!strings.HasPrefix(filepath.Base(p), ".") &&
+						!ignoreFile(p+"/") && dirExists(p) {
+						fsw.Add(p)
+					}
+					continue
 				}
-				mu.Unlock()
+				deb.add(p)
 			case err, ok := <-fsw.Errors:
 				if !ok {
+					restartPomWatcher(fsw)
 					return
 				}
 				fmt.Printf("ERROR: pom watcher: %v\n", err)
 			}
 		}
 	}()
+	return nil
+}
+
+// restartPomWatcher rebuilds the pom watcher if its event stream dies, so a
+// backend failure degrades to a re-scan instead of pom changes going
+// silently untracked
+func restartPomWatcher(old *fsnotify.Watcher) {
+	fmt.Println("ERROR: pom watcher stopped, restarting...")
+	old.Close()
+	for {
+		if err := startPomWatcher(); err == nil {
+			return
+		}
+		time.Sleep(5 * time.Second)
+	}
 }
 
 func processPomChange(filename string, states map[string]pomState, statesMu *sync.Mutex) {
@@ -225,12 +237,7 @@ func processPomChange(filename string, states map[string]pomState, statesMu *syn
 		return
 	}
 	fmt.Println("POM file updated")
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		fmt.Printf("ERROR processing POM file %s: %v\n", filename, err)
-		return
-	}
-	newState, err := pomFileState(data)
+	newState, err := pomStateFor(filename)
 	if err != nil {
 		fmt.Printf("ERROR processing POM file %s: %v\n", filename, err)
 		return
@@ -264,9 +271,7 @@ func processPomChange(filename string, states map[string]pomState, statesMu *syn
 func rebuildProject(pomFile string) {
 	projectRoot := filepath.Dir(pomFile)
 	projectName := extractProjectNameFromPom(pomFile, false)
-	if opts.Notification {
-		sendNotification("🛠️", "Rebuilding: "+projectName)
-	}
+	sendNotification("🛠️", "Rebuilding: "+projectName)
 	// TODO: Make the build command configurable
 	cmd := exec.Command("mvn", "clean", "package", "-DskipTests")
 	cmd.Dir = projectRoot
@@ -278,29 +283,20 @@ func rebuildProject(pomFile string) {
 			exitStatus = exitErr.ExitCode()
 		}
 		fmt.Printf("Maven build failed with exit status %d\n", exitStatus)
-		if opts.Notification {
-			sendNotification("🛠️ ❌", "Build: "+projectName+" failed")
-		}
+		sendNotification("🛠️ ❌", "Build: "+projectName+" failed")
 		return
 	}
 	jars, _ := filepath.Glob(filepath.Join(projectRoot, "target", projectName+"*.jar"))
-	copied := false
-	for _, jar := range jars {
-		if err := copyFile(jar, opts.AppsDir+"/"+projectName+".jar"); err != nil {
-			fmt.Printf("ERROR copying %s: %v\n", jar, err)
-		} else {
-			copied = true
-		}
+	if len(jars) != 1 {
+		fmt.Printf("Maven build failed: expected exactly one target/%s*.jar, found %d\n", projectName, len(jars))
+		sendNotification("🛠️ ❌", "Build: "+projectName+" failed")
+		return
 	}
-	if copied {
-		fmt.Printf("Maven build executed successfully, redeploying app %s\n", projectName)
-		if opts.Notification {
-			sendNotification("🛠️ ✅", "Build: "+projectName+" succeeded")
-		}
-	} else {
-		fmt.Printf("Maven build succeeded but no target/%s*.jar could be copied\n", projectName)
-		if opts.Notification {
-			sendNotification("🛠️ ❌", "Build: "+projectName+" failed")
-		}
+	if err := copyFile(jars[0], opts.AppsDir+"/"+projectName+".jar"); err != nil {
+		fmt.Printf("ERROR copying %s: %v\n", jars[0], err)
+		sendNotification("🛠️ ❌", "Build: "+projectName+" failed")
+		return
 	}
+	fmt.Printf("Maven build executed successfully, redeploying app %s\n", projectName)
+	sendNotification("🛠️ ✅", "Build: "+projectName+" succeeded")
 }

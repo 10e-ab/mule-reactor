@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -18,11 +19,35 @@ type XMLNode struct {
 }
 
 func parseXML(data []byte) (*XMLNode, error) {
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	dec.CharsetReader = charsetReader
 	var root XMLNode
-	if err := xml.Unmarshal(data, &root); err != nil {
+	if err := dec.Decode(&root); err != nil {
 		return nil, err
 	}
 	return &root, nil
+}
+
+// charsetReader lets the decoder handle the single-byte encodings that
+// occasionally appear in XML declarations, without a conversion dependency
+func charsetReader(charset string, input io.Reader) (io.Reader, error) {
+	switch strings.ToLower(charset) {
+	case "utf-8", "utf8", "us-ascii", "ascii":
+		return input, nil
+	case "iso-8859-1", "iso8859-1", "latin1", "windows-1252", "cp1252":
+		// Each ISO-8859-1 byte maps to the same code point; Windows-1252 is
+		// close enough for config content
+		data, err := io.ReadAll(input)
+		if err != nil {
+			return nil, err
+		}
+		runes := make([]rune, len(data))
+		for i, b := range data {
+			runes[i] = rune(b)
+		}
+		return strings.NewReader(string(runes)), nil
+	}
+	return nil, fmt.Errorf("unsupported charset %q", charset)
 }
 
 func (n *XMLNode) child(name string) *XMLNode {
@@ -117,7 +142,8 @@ func (n *XMLNode) writeCanonical(b *strings.Builder) {
 // sides of a comparison go through this same function, so only its internal
 // consistency matters, not its exact output format.
 func canonicalizeXML(data []byte) (string, error) {
-	dec := xml.NewDecoder(strings.NewReader(string(data)))
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	dec.CharsetReader = charsetReader
 	var buf strings.Builder
 	enc := xml.NewEncoder(&buf)
 	enc.Indent("", "  ")

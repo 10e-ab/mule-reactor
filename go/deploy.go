@@ -21,13 +21,9 @@ func watchDeployments() {
 	logFilePath := opts.AppsDir + "/../logs/mule_ee.log"
 	go tailFile(logFilePath, func(line string) {
 		if m := startedAppRegex.FindStringSubmatch(line); m != nil {
-			if opts.Notification {
-				sendNotification("✅", "Deployment: "+m[1]+" succeeded")
-			}
+			sendNotification("✅", "Deployment: "+m[1]+" succeeded")
 		} else if m := deployFailedRegex.FindStringSubmatch(line); m != nil {
-			if opts.Notification {
-				sendNotification("❌", "Deployment: "+m[1]+" failed")
-			}
+			sendNotification("❌", "Deployment: "+m[1]+" failed")
 		}
 	})
 }

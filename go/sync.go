@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -238,7 +239,9 @@ func normalizeForDiff(content string) string {
 				return r
 			}, line)
 		}
-		if opts.IgnoreBlankLines && strings.TrimSpace(line) == "" {
+		// Like diff -B, only completely empty lines are ignored (with -w
+		// active, whitespace-only lines have already become empty)
+		if opts.IgnoreBlankLines && line == "" {
 			continue
 		}
 		out = append(out, line)
@@ -249,9 +252,7 @@ func normalizeForDiff(content string) string {
 // rebuildMuleArtifact rewrites mule-artifact.json, which triggers a redeploy
 func rebuildMuleArtifact(projectDir, appDir string) error {
 	projectName := filepath.Base(removeTrailingSlash(projectDir))
-	if opts.Notification {
-		sendNotification("🔄", "Re-deploying: "+projectName)
-	}
+	sendNotification("🔄", "Re-deploying: "+projectName)
 	filePath := appDir + "/META-INF/mule-artifact/mule-artifact.json"
 	jsonData, err := os.ReadFile(filePath)
 	if err != nil {
@@ -305,6 +306,14 @@ func relativeFiles(root, ext string) ([]string, error) {
 		if err != nil {
 			return err
 		}
+		// Dot-files and dot-directories are excluded like a shell glob,
+		// keeping .DS_Store and friends out of mule-artifact.json
+		if strings.HasPrefix(d.Name(), ".") && filepath.ToSlash(path) != removeTrailingSlash(prefix) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		if d.IsDir() {
 			return nil
 		}
@@ -315,6 +324,16 @@ func relativeFiles(root, ext string) ([]string, error) {
 		return nil
 	})
 	return files, err
+}
+
+// triggerRedeploy rewrites mule-artifact.json so Mule redeploys the app
+func triggerRedeploy(projectRoot, appDir string) {
+	if projectRoot == "" {
+		return
+	}
+	if err := rebuildMuleArtifact(projectRoot, appDir); err != nil {
+		fmt.Printf("ERROR rebuilding mule-artifact.json: %v\n", err)
+	}
 }
 
 func handleFileChange(file, event string) {
@@ -360,10 +379,8 @@ func handleFileChange(file, event string) {
 			fmt.Printf("Updated: %s in %s\n", file, destinationDir)
 			if log4j2File(file) && containsMonitorInterval(file) {
 				fmt.Println("Skipping forced re-deploy because log4j2.xml contains monitorInterval")
-			} else if projectRoot != "" {
-				if err := rebuildMuleArtifact(projectRoot, appDir); err != nil {
-					fmt.Printf("ERROR rebuilding mule-artifact.json: %v\n", err)
-				}
+			} else {
+				triggerRedeploy(projectRoot, appDir)
 			}
 			if opts.Verbose {
 				fmt.Printf("Updated: %s\n", file)
@@ -377,11 +394,7 @@ func handleFileChange(file, event string) {
 		if dirExists(file) {
 			os.MkdirAll(destinationDir+"/"+filepath.Base(file), 0o755)
 			fmt.Printf("Created directory: %s in %s\n", file, destinationDir)
-			if projectRoot != "" {
-				if err := rebuildMuleArtifact(projectRoot, appDir); err != nil {
-					fmt.Printf("ERROR rebuilding mule-artifact.json: %v\n", err)
-				}
-			}
+			triggerRedeploy(projectRoot, appDir)
 		} else {
 			withSourceFile(file, projectRoot, func(source string) {
 				destination := destinationDir + "/" + filepath.Base(file)
@@ -390,11 +403,7 @@ func handleFileChange(file, event string) {
 					return
 				}
 				fmt.Printf("Added: %s in %s\n", file, destinationDir)
-				if projectRoot != "" {
-					if err := rebuildMuleArtifact(projectRoot, appDir); err != nil {
-						fmt.Printf("ERROR rebuilding mule-artifact.json: %v\n", err)
-					}
-				}
+				triggerRedeploy(projectRoot, appDir)
 			})
 		}
 
@@ -409,11 +418,7 @@ func handleFileChange(file, event string) {
 			fmt.Printf("Removed: %s\n", deletePath)
 		}
 		projectRoot := extractProjectRootFromPath(file)
-		if projectRoot != "" {
-			if err := rebuildMuleArtifact(projectRoot, appDir); err != nil {
-				fmt.Printf("ERROR rebuilding mule-artifact.json: %v\n", err)
-			}
-		}
+		triggerRedeploy(projectRoot, appDir)
 	}
 }
 
@@ -427,10 +432,25 @@ func handleFileChangeSafely(file, event string) {
 	handleFileChange(file, event)
 }
 
+// copyFile streams src to dst; a newly created dst gets src's permissions
+// (so e.g. exec bits survive), an existing dst keeps its own
 func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
+	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0o644)
+	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }

@@ -48,7 +48,7 @@ func main() {
 	noIgnoreWhitespace := flag.Bool("no-ignore-whitespace", false, "Considers whitespace changes in all file types")
 	noIgnoreBlankLines := flag.Bool("no-ignore-blank-lines", false, "Considers blank lines in all file types during comparison")
 	flag.StringVar(&opts.ProjectsDir, "projects-dir", wd, "Directory of projects (default: current directory)")
-	flag.StringVar(&opts.AppsDir, "apps-dir", filepath.Join(os.Getenv("MULE_HOME"), "apps"), "Directory to where the apps should be deployed (default: $MULE_HOME/apps)")
+	flag.StringVar(&opts.AppsDir, "apps-dir", os.Getenv("MULE_HOME")+"/apps", "Directory to where the apps should be deployed (default: $MULE_HOME/apps)")
 	flag.Parse()
 
 	opts.ResourceFiltering = !*noResourceFiltering
@@ -56,10 +56,20 @@ func main() {
 	opts.IgnoreWhitespace = !*noIgnoreWhitespace
 	opts.IgnoreBlankLines = !*noIgnoreBlankLines
 
-	opts.ProjectsDir = filepath.ToSlash(opts.ProjectsDir)
-	opts.AppsDir = filepath.ToSlash(opts.AppsDir)
+	opts.ProjectsDir = normalizePath(opts.ProjectsDir)
+	opts.AppsDir = normalizePath(opts.AppsDir)
 
 	run()
+}
+
+// normalizePath makes a path absolute, cleaned and '/'-separated: all
+// matching against watcher event paths assumes this canonical form, so
+// relative --projects-dir/--apps-dir values must not leak past startup
+func normalizePath(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	return filepath.ToSlash(filepath.Clean(p))
 }
 
 func run() {

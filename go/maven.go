@@ -96,9 +96,9 @@ func filteredResourceDefs(pomFile string) ([]resourceDef, error) {
 	return defs, nil
 }
 
-// antPathMatch matches with ant-style semantics: '*' does not cross '/' and
+// antPathMatch matches with ant-style semantics: '*' does not cross '/',
 // '**/' matches zero or more directories (so '**/x' also matches a
-// root-level x)
+// root-level x), and a bare '**' matches anything including '/'
 func antPathMatch(patterns []string, relativePath string) bool {
 	for _, pattern := range patterns {
 		if antPatternToRegexp(pattern).MatchString(relativePath) {
@@ -126,11 +126,14 @@ func antPatternToRegexp(pattern string) *regexp.Regexp {
 		case strings.HasPrefix(pattern[i:], "**/"):
 			b.WriteString(`(?:[^/]+/)*`)
 			i += 3
-		case pattern[i] == '*':
+		case strings.HasPrefix(pattern[i:], "**"):
 			for i < len(pattern) && pattern[i] == '*' {
 				i++
 			}
+			b.WriteString(`.*`)
+		case pattern[i] == '*':
 			b.WriteString(`[^/]*`)
+			i++
 		case pattern[i] == '?':
 			b.WriteString(`[^/]`)
 			i++
@@ -214,11 +217,7 @@ func mavenProperties(projectRoot string) (map[string]string, error) {
 	if root == nil {
 		return properties, nil
 	}
-	if props := root.child("properties"); props != nil {
-		for i := range props.Children {
-			properties[props.Children[i].XMLName.Local] = props.Children[i].Text
-		}
-	}
+	addProperties(root.child("properties"), properties)
 	// Properties from active profiles override the project-level ones
 	for _, profile := range root.child("profiles").childrenNamed("profile") {
 		if !profileActive(profile, projectRoot) {
@@ -227,11 +226,7 @@ func mavenProperties(projectRoot string) (map[string]string, error) {
 		if opts.Verbose {
 			fmt.Printf("Maven filtering: including properties from active profile '%s'\n", profile.childText("id"))
 		}
-		if props := profile.child("properties"); props != nil {
-			for i := range props.Children {
-				properties[props.Children[i].XMLName.Local] = props.Children[i].Text
-			}
-		}
+		addProperties(profile.child("properties"), properties)
 	}
 	// Project coordinates, falling back to the parent pom values when inherited
 	for _, field := range []string{"groupId", "artifactId", "version", "name"} {
@@ -257,6 +252,15 @@ func mavenProperties(projectRoot string) (map[string]string, error) {
 		}
 	}
 	return properties, nil
+}
+
+func addProperties(node *XMLNode, into map[string]string) {
+	if node == nil {
+		return
+	}
+	for i := range node.Children {
+		into[node.Children[i].XMLName.Local] = node.Children[i].Text
+	}
 }
 
 func gitOutput(projectRoot string, args ...string) (string, bool) {
@@ -313,7 +317,8 @@ func javaFormatTime(t time.Time, javaFormat string) string {
 	var b strings.Builder
 	for _, token := range javaFormatTokenRegex.FindAllString(javaFormat, -1) {
 		switch {
-		case strings.HasPrefix(token, "'"):
+		// A lone unterminated quote falls through to the default case
+		case strings.HasPrefix(token, "'") && len(token) >= 2 && strings.HasSuffix(token, "'"):
 			inner := token[1 : len(token)-1]
 			if inner == "" {
 				b.WriteString("'")
