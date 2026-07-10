@@ -158,8 +158,26 @@ func filteredResource(file, projectRoot string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// A resource <directory> may itself contain ${...} tokens
+	// (e.g. ${project.basedir}/src/main/resources); Maven interpolates them
+	// before use, so we must too or the prefix match silently never hits
+	var properties map[string]string
 	for _, def := range defs {
-		resourceDir := ensureTrailingSlash(filepath.ToSlash(filepath.Clean(resolveAgainst(projectRoot, def.directory))))
+		directory := def.directory
+		if strings.Contains(directory, "${") {
+			if properties == nil {
+				if properties, err = mavenProperties(projectRoot); err != nil {
+					return false, err
+				}
+			}
+			directory = mavenTokenRegex.ReplaceAllStringFunc(directory, func(token string) string {
+				if value, ok := properties[token[2:len(token)-1]]; ok {
+					return value
+				}
+				return token
+			})
+		}
+		resourceDir := ensureTrailingSlash(filepath.ToSlash(filepath.Clean(resolveAgainst(projectRoot, directory))))
 		if !strings.HasPrefix(abs, resourceDir) {
 			continue
 		}
@@ -239,6 +257,8 @@ func mavenProperties(projectRoot string) (map[string]string, error) {
 		}
 	}
 	properties["project.basedir"] = projectRoot
+	// Deprecated Maven alias for project.basedir, still common in poms
+	properties["basedir"] = projectRoot
 	// Pom properties can reference each other, resolve a few levels of nesting
 	for pass := 0; pass < 3; pass++ {
 		for key, value := range properties {

@@ -186,6 +186,48 @@ func TestFilteredResource(t *testing.T) {
 	}
 }
 
+func TestFilteredResourceDirectoryWithTokens(t *testing.T) {
+	setOpts(t, defaultTestOpts())
+	dir := t.TempDir()
+	writeFile(t, dir+"/pom.xml", `<project>
+  <groupId>g</groupId><artifactId>a</artifactId><version>1.0</version><name>app</name>
+  <properties><res.dir>src/main/resources</res.dir></properties>
+  <build>
+    <resources>
+      <resource>
+        <directory>${project.basedir}/src/main/resources</directory>
+        <filtering>true</filtering>
+        <includes><include>**/*.properties</include></includes>
+      </resource>
+      <resource>
+        <directory>${basedir}/${res.dir}</directory>
+        <filtering>true</filtering>
+        <includes><include>**/*.yaml</include></includes>
+      </resource>
+    </resources>
+  </build>
+</project>`)
+	res := dir + "/src/main/resources"
+
+	cases := []struct {
+		file string
+		want bool
+	}{
+		{res + "/app.properties", true}, // via ${project.basedir}
+		{res + "/config.yaml", true},    // via ${basedir} + a custom property
+		{res + "/other.txt", false},     // matched by neither include
+	}
+	for _, c := range cases {
+		got, err := filteredResource(c.file, dir)
+		if err != nil {
+			t.Fatalf("filteredResource(%q): %v", c.file, err)
+		}
+		if got != c.want {
+			t.Errorf("filteredResource(%q) = %v, want %v", c.file, got, c.want)
+		}
+	}
+}
+
 func TestFilteredResourceNoBuildSection(t *testing.T) {
 	setOpts(t, defaultTestOpts())
 	dir := t.TempDir()
