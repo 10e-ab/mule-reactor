@@ -7,6 +7,7 @@ It listens for file changes in your Mule projects and automatically deploys the 
 
 - **Real-time Deployment**: Quickly deploys changes to Mule applications as soon as files are modified.
 - **Comprehensive File Support**: Supports changing property files, `log4j2.xml`, and other resources, ensuring that all aspects of your Mule application can be dynamically updated.
+- **Maven Resource Filtering**: Resource files that the pom marks as filtered (`<resource><filtering>true</filtering>`) get their `${...}` tokens substituted on sync — using the pom properties, project coordinates, live git info and a build timestamp — mirroring what `mvn process-resources` produces. See [Maven Resource Filtering](#maven-resource-filtering).
 - **Flexible Configuration Management**: Supports adding new, renaming, and removing Mule XML configuration files, allowing for on-the-fly reconfiguration of your Mule applications.
 - **Versatile Deployment Support**: Works with both Anypoint Studio and standalone Mule runtimes.
 - **Editor Agnostic**: Compatible with all editors, enhancing workflow flexibility for Mule application development across diverse development setups.
@@ -190,13 +191,41 @@ This setting tells Mule to check for changes in the log4j2.xml file every 10 sec
 Applying these optional configurations will streamline your development process, making it more efficient and responsive to changes.
 
 This section offers users guidance on optimizing their environment for use with MuleReactor, improving both the usability of the tool and the overall developer experience.
-   
+
+### Maven Resource Filtering
+
+If a project's `pom.xml` declares filtered resources, for example:
+
+```xml
+<resources>
+  <resource>
+    <filtering>true</filtering>
+    <directory>src/main/resources</directory>
+    <includes>
+      <include>mule-application.properties</include>
+    </includes>
+  </resource>
+</resources>
+```
+
+then Maven replaces `${...}` tokens in those files at build time — and syncing the raw source file would hand the runtime unresolved tokens (breaking, for instance, an `api.raml=resource::...:${raml.version}:...` reference). MuleReactor detects files covered by a `filtering=true` resource (honoring `includes`/`excludes`) and substitutes their tokens before syncing:
+
+- `pom.xml` `<properties>` values (with nested `${...}` references resolved), including properties from profiles that are active by default or activated by a file `exists`/`missing` condition — profiles requiring `-P` flags, settings.xml, JDK, OS or property activation are not evaluated
+- `project.groupId`, `project.artifactId`, `project.version`, `project.name`, `project.basedir` (falling back to the `<parent>` values when inherited)
+- `maven.build.timestamp`, honoring `maven.build.timestamp.format` — substituted with a fixed epoch sentinel (`1970-01-01T00:00:00Z`) rather than the current time. MuleReactor didn't build anything, so a real timestamp would be a lie — and the sentinel keeps filtered output deterministic, so unchanged files diff as identical and don't trigger needless redeploys
+- Live git values matching what `git-commit-id-maven-plugin` would inject: `git.commit.id`, `git.commit.id.abbrev`, `git.branch`, `git.dirty`
+
+Unknown tokens are left untouched (as Maven does) with a warning. Files not covered by a filtered resource — including binaries like keystores — are synced byte-for-byte as before. Note that properties inherited from a parent pom's `<properties>` section are not resolved (only the parent's coordinates are), since the parent pom is typically not available on disk.
+
+Changes to the pom itself are also detected: MuleReactor watches the `pom.xml` files, and any change to the `<dependencies>`, `<parent>`, `<properties>`, `<profiles>` or `<build><resources>` sections triggers a full `mvn` rebuild when running with `-p`/`--watch-pom` — a rebuild is the one response that is always correct, since a property can feed dependency versions and filtered resources alike, and only Maven can package new artifacts into the app. Without `-p`, MuleReactor prints a warning that the deployed app is stale instead of touching it. Whitespace-only pom edits are ignored.
+
+To turn the feature off entirely, start with `--no-resource-filtering` — filtered resource files are then synced as-is, tokens included, matching the old behavior. The pom watcher then also stops reacting to property/profile/resources changes (they can't reach the deployed app without filtering); only dependency changes trigger a rebuild, as before. Note this reopens the blind spot where a dependency version fed by a property (`<version>${some.version}</version>`) changes without triggering a rebuild.
 
 ## Limitations
 
 While MuleReactor aims to streamline the development process by enabling automatic hot deployment of Mule applications, there are certain scenarios and limitations you should be aware of:
 
-- **Pre-Processed Resources**: If your project setup involves pre-processing resources—such as through Maven—then the hot deployment of these resources may not work as expected. The tool syncs the files as they are in your project directory. If your build process generates or modifies resources, those changes might not be reflected in the hot deployed application.
+- **Pre-Processed Resources**: Maven resource filtering (`${...}` token substitution) is supported — see [Maven Resource Filtering](#maven-resource-filtering). Other kinds of build-time resource generation or modification are not: the tool syncs the files as they are in your project directory, so resources produced by other plugins will not be reflected in the hot deployed application.
 
 - **Hot Deploy Reliability**: MuleReactor significantly improves the developer experience by reducing the time between making a change and seeing it reflected in the running application. However, it's not a silver bullet. Hot deployment, by its nature, can sometimes fail or lead to unexpected behaviors due to the complexities of application state and runtime management. This script might also introduce unknown behaviors that are difficult to predict due to the vast variety of Mule applications and configurations.
 

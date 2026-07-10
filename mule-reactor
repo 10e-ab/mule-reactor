@@ -12,6 +12,7 @@ require 'open3'
 require 'diffy'
 require 'pathname'
 require 'stringio'
+require 'tempfile'
 
 
 # TODO/Ideas
@@ -26,7 +27,7 @@ require 'stringio'
 # * There is a bug that causes rebuilds when pom.xml are updated
 
 # Initialize options with default values
-options = OpenStruct.new(verbose: false, watch_pom: false, notification: false, ignore_formatting: true,ignore_blank_lines: true,ignore_whitespace: true, watch_deployments: false,follow_symlinks: false,projects_dir: Dir.pwd, apps_dir: "#{ENV['MULE_HOME']}/apps", symlink_interval: 1.1, pom_interval: 1.1)
+options = OpenStruct.new(verbose: false, watch_pom: false, notification: false, ignore_formatting: true,ignore_blank_lines: true,ignore_whitespace: true, watch_deployments: false,follow_symlinks: false,projects_dir: Dir.pwd, apps_dir: "#{ENV['MULE_HOME']}/apps", symlink_interval: 1.1, pom_interval: 1.1, resource_filtering: true)
 
 OptionParser.new do |parser|
   parser.banner = "Usage: ruby #{File.basename(__FILE__)} [options]"
@@ -48,8 +49,12 @@ OptionParser.new do |parser|
     options.watch_deployments = true
   end
 
-  parser.on("-p", "--watch-pom", "Detect changes in pom.xml and rebuild when relevant content has changed") do
+  parser.on("-p", "--watch-pom", "Rebuild when the pom.xml dependencies, properties, profiles or resources change. Without this flag a warning is printed instead") do
     options.watch_pom = true
+  end
+
+  parser.on("--no-resource-filtering", "Disable Maven resource filtering: sync filtered resource files as-is, without substituting ${...} tokens. Pom property/profile/resources changes then no longer trigger rebuilds, only dependency changes do") do
+    options.resource_filtering = false
   end
 
   parser.on("--no-ignore-formatting", "Considers changes in formatting for JSON and XML files.") do
@@ -86,6 +91,7 @@ OptionParser.new do |parser|
 end.parse!
 
 VERBOSE=options.verbose
+RESOURCE_FILTERING=options.resource_filtering
 
 def ensure_trailing_slash(path)
   path[-1] == '/' ? path : "#{path}/"
@@ -134,7 +140,7 @@ def watch_dirs(projects_dir)
   dirs
 end
 
-def extract_project_name_from_pom(pom_file_path)
+def extract_project_name_from_pom(pom_file_path, quiet: false)
   document = Document.new(File.read(pom_file_path))
   project_name = XPath.first(document, '//project/name')
 
@@ -142,7 +148,8 @@ def extract_project_name_from_pom(pom_file_path)
     puts "Project Name: #{project_name.text}" if VERBOSE
     return project_name.text
   else
-    puts "ERROR: No <name> element found in the pom.xml"
+    puts "ERROR: No <name> element found in the pom.xml" unless quiet
+    nil
   end
 end
 
@@ -198,6 +205,243 @@ def ignore_file?(file)
   false
 end
 
+# ---------------------------------------------------------------------------
+# Maven resource filtering
+#
+# A pom.xml can declare <build><resources><resource> entries with
+# <filtering>true</filtering>, which makes Maven replace ${...} tokens in the
+# matched resource files at build time. Since we sync the raw files from
+# src/main/resources, such tokens would reach the runtime unresolved and break
+# Mule property resolution. For files covered by a filtered resource we mimic
+# Maven: substitute ${...} tokens before syncing, using the pom properties,
+# the project coordinates and live equivalents of build-time values
+# (git commit/dirty as injected by git-commit-id-maven-plugin, and
+# ${maven.build.timestamp}). Unknown tokens are left as-is, like Maven does.
+# ---------------------------------------------------------------------------
+
+MAVEN_TOKEN_REGEX = /\$\{([^}]+)\}/
+
+# Parsed poms memoized by path+mtime: file events fire on every save and
+# would otherwise re-read and re-parse the pom each time
+POM_DOCUMENT_CACHE = {}
+POM_DOCUMENT_CACHE_MUTEX = Mutex.new
+
+def pom_document(pom_file)
+  return nil unless File.exist?(pom_file)
+  mtime = File.mtime(pom_file)
+  POM_DOCUMENT_CACHE_MUTEX.synchronize do
+    cached = POM_DOCUMENT_CACHE[pom_file]
+    return cached[:document] if cached && cached[:mtime] == mtime
+    document = Document.new(File.read(pom_file))
+    POM_DOCUMENT_CACHE[pom_file] = { mtime: mtime, document: document }
+    document
+  end
+end
+
+def filtered_resource_defs(pom_file)
+  document = pom_document(pom_file)
+  return [] unless document
+  defs = []
+  document.elements.each('project/build/resources/resource') do |resource|
+    next unless resource.elements['filtering']&.text.to_s.strip == 'true'
+    directory = resource.elements['directory']&.text.to_s.strip
+    next if directory.empty?
+    defs << {
+      directory: directory,
+      includes: resource.get_elements('includes/include').map { |e| e.text.to_s.strip },
+      excludes: resource.get_elements('excludes/exclude').map { |e| e.text.to_s.strip }
+    }
+  end
+  defs
+end
+
+# FNM_PATHNAME gives ant semantics: '*' does not cross '/' and '**/'
+# matches zero or more directories (so '**/x' also matches a root-level x)
+def ant_path_match?(patterns, relative_path)
+  patterns.any? { |pattern| File.fnmatch(pattern, relative_path, File::FNM_PATHNAME) }
+end
+
+def filtered_resource?(file, project_root)
+  file = File.expand_path(file)
+  filtered_resource_defs("#{project_root}/pom.xml").any? do |resource|
+    resource_dir = ensure_trailing_slash(File.expand_path(resource[:directory], project_root))
+    next false unless file.start_with?(resource_dir)
+    relative_path = file.sub(resource_dir, '')
+    included = resource[:includes].empty? || ant_path_match?(resource[:includes], relative_path)
+    included && !ant_path_match?(resource[:excludes], relative_path)
+  end
+end
+
+# Only activation conditions we can evaluate locally are supported:
+# activeByDefault and file exists/missing. Profiles activated via -P flags,
+# settings.xml, JDK, OS or property conditions are not considered.
+def profile_active?(profile, project_root)
+  activation = profile.elements['activation']
+  return false unless activation
+  return true if activation.elements['activeByDefault']&.text.to_s.strip == 'true'
+  file_condition = activation.elements['file']
+  if file_condition
+    exists = file_condition.elements['exists']&.text.to_s.strip
+    missing = file_condition.elements['missing']&.text.to_s.strip
+    return File.exist?(File.expand_path(exists, project_root)) if exists && !exists.empty?
+    return !File.exist?(File.expand_path(missing, project_root)) if missing && !missing.empty?
+  end
+  false
+end
+
+def maven_properties(project_root)
+  document = pom_document("#{project_root}/pom.xml")
+  return {} unless document
+  properties = {}
+  document.elements.each('project/properties/*') { |e| properties[e.name] = e.text.to_s }
+  # Properties from active profiles override the project-level ones
+  document.elements.each('project/profiles/profile') do |profile|
+    next unless profile_active?(profile, project_root)
+    puts "Maven filtering: including properties from active profile '#{profile.elements['id']&.text}'" if VERBOSE
+    profile.elements.each('properties/*') { |e| properties[e.name] = e.text.to_s }
+  end
+  # Project coordinates, falling back to the parent pom values when inherited
+  %w[groupId artifactId version name].each do |field|
+    value = document.elements["project/#{field}"]&.text || document.elements["project/parent/#{field}"]&.text
+    properties["project.#{field}"] = value if value
+  end
+  properties['project.basedir'] = project_root
+  # Pom properties can reference each other, resolve a few levels of nesting
+  3.times do
+    properties.transform_values! { |value| value.gsub(MAVEN_TOKEN_REGEX) { |token| properties[$1] || token } }
+  end
+  properties
+end
+
+def git_output(project_root, *args)
+  output, _error, status = Open3.capture3('git', '-C', project_root, *args)
+  status.success? ? output.strip : nil
+rescue Errno::ENOENT
+  nil
+end
+
+# Live equivalents of values that Maven plugins compute at build time
+def dynamic_maven_property(key, project_root, properties)
+  case key
+  when 'maven.build.timestamp'
+    # Deliberately a fixed sentinel, not Time.now: it keeps the filtered output
+    # deterministic (so unchanged files diff as identical and don't redeploy)
+    # and honestly signals that the file was hot-synced, not built
+    java_format = properties['maven.build.timestamp.format'] || "yyyy-MM-dd'T'HH:mm:ss'Z'"
+    Time.at(0).utc.strftime(java_date_format_to_strftime(java_format))
+  when 'git.commit.id', 'git.commit.id.full'
+    git_output(project_root, 'rev-parse', 'HEAD')
+  when 'git.commit.id.abbrev'
+    git_output(project_root, 'rev-parse', '--short', 'HEAD')
+  when 'git.branch'
+    git_output(project_root, 'rev-parse', '--abbrev-ref', 'HEAD')
+  when 'git.dirty'
+    changes = git_output(project_root, 'status', '--porcelain')
+    changes.nil? ? nil : (!changes.empty?).to_s
+  end
+end
+
+def java_date_format_to_strftime(java_format)
+  java_format.scan(/'[^']*'|y+|M+|d+|E+|a|H+|h+|m+|s+|S+|X+|Z+|z+|./m).map do |token|
+    case token
+    when /\A'(.*)'\z/ then Regexp.last_match(1).empty? ? "'" : Regexp.last_match(1)
+    when 'yyyy', 'yyy' then '%Y'
+    when 'yy', 'y' then '%y'
+    when 'MMMM' then '%B'
+    when 'MMM' then '%b'
+    when 'MM', 'M' then '%m'
+    when 'dd', 'd' then '%d'
+    when 'EEEE' then '%A'
+    when /\AE+\z/ then '%a'
+    when 'a' then '%p'
+    when 'HH', 'H' then '%H'
+    when 'hh', 'h' then '%I'
+    when 'mm', 'm' then '%M'
+    when 'ss', 's' then '%S'
+    when /\AS+\z/ then '%L'
+    when 'XXX' then '%:z'
+    when /\A[XZz]+\z/ then '%z'
+    when '%' then '%%'
+    else token
+    end
+  end.join
+end
+
+def filter_maven_tokens(content, project_root)
+  properties = maven_properties(project_root)
+  # Dynamic values can spawn a git subprocess, resolve each key at most once
+  dynamic_values = {}
+  substituted = []
+  unresolved = []
+  filtered = content.gsub(MAVEN_TOKEN_REGEX) do |token|
+    key = Regexp.last_match(1)
+    unless dynamic_values.key?(key)
+      dynamic_values[key] = dynamic_maven_property(key, project_root, properties)
+    end
+    value = dynamic_values[key]
+    value = properties[key] if value.nil?
+    if value.nil?
+      unresolved << key
+      token
+    else
+      substituted << key
+      value
+    end
+  end
+  puts "Maven filtering resolved: #{substituted.uniq.join(', ')}" if VERBOSE && substituted.any?
+  puts "WARNING: Maven filtering could not resolve: #{unresolved.uniq.join(', ')} (left as-is)" if unresolved.any?
+  filtered
+end
+
+# Yields the path to sync: a temp file with Maven ${...} tokens substituted
+# when the pom marks the file as a filtered resource, otherwise the file
+# itself. The temp file is always deleted, whatever the block does. If
+# filtering fails (e.g. the pom is unreadable mid-edit) the block is NOT
+# called — keeping the last good deployed copy beats syncing a file with
+# unresolved ${...} tokens that would break property resolution.
+def with_source_file(file, project_root)
+  temp_file = nil
+  source = file
+  begin
+    if RESOURCE_FILTERING && project_root && resources_file?(file) && filtered_resource?(file, project_root)
+      content = File.read(file)
+      if content.valid_encoding?
+        filtered = filter_maven_tokens(content, project_root)
+        temp_file = Tempfile.create([File.basename(file, '.*'), File.extname(file)])
+        temp_file.write(filtered)
+        temp_file.close
+        puts "Applied Maven resource filtering to #{File.basename(file)}"
+        source = temp_file.path
+      end
+    end
+  rescue => e
+    puts "WARNING: Maven resource filtering failed for #{file}: #{e.message}. Skipping sync, keeping the deployed file unchanged."
+    return
+  end
+  yield source
+ensure
+  File.delete(temp_file.path) if temp_file && File.exist?(temp_file.path)
+end
+
+# Canonicalizes XML formatting so whitespace-only differences disappear
+def canonicalize_xml(node)
+  formatter = REXML::Formatters::Pretty.new(2)
+  formatter.compact = true
+  io = StringIO.new
+  formatter.write(node, io)
+  io.string
+end
+
+# Hash of the pom content that affects resource filtering, so the pom watcher
+# can detect when filtered resources need a re-sync
+def hash_filter_inputs(document)
+  content = ""
+  ['project/properties', 'project/profiles', 'project/build/resources'].each do |xpath|
+    document.elements.each(xpath) { |element| content += canonicalize_xml(element) }
+  end
+  Digest::SHA256.hexdigest(content)
+end
+
 # This will trigger a redeploy
 def rebuild_mule_artifact(project_dir,app_dir,notification)
   project_name=File.basename(project_dir.chomp('/'))
@@ -225,8 +469,7 @@ def rebuild_mule_artifact(project_dir,app_dir,notification)
   puts "Rebuilt mule-artifact.json"
 end
 
-def hash_dependencies(xml_content)
-  document = REXML::Document.new(xml_content)
+def hash_dependencies(document)
   dependencies_text = ""
   formatted_content = ""
 
@@ -258,13 +501,29 @@ def hash_dependencies(xml_content)
   }
 end
 
+def pom_file_state(xml_content)
+  document = REXML::Document.new(xml_content)
+  hash_dependencies(document).merge(filter_hash: hash_filter_inputs(document))
+end
+
+# A pom change is rebuild-worthy when the dependencies/parent changed, or —
+# with resource filtering enabled — when the filtering inputs (properties,
+# profiles, resources) changed. Properties count because they can feed
+# dependency versions and filtered resource files alike; a full rebuild is the
+# one response that is correct in every case. With --no-resource-filtering the
+# pom properties never reach the deployed app, so they are not watched.
+def pom_rebuild_worthy?(old_state, new_state)
+  return true if old_state[:hash] != new_state[:hash]
+  RESOURCE_FILTERING && old_state[:filter_hash] != new_state[:filter_hash]
+end
+
 def initialize_pom_state(projects_dir)
   pom_state = {}
   projects_dir=remove_trailing_slash(projects_dir)
   (Dir.glob("#{projects_dir}/pom.xml") + Dir.glob("#{projects_dir}/*/pom.xml")).each do |pom_file|
     next if ignore_file?(pom_file)
     xml_content = File.read(pom_file)
-    pom_state[pom_file] = hash_dependencies(xml_content)
+    pom_state[pom_file] = pom_file_state(xml_content)
   end
   pom_state
 end
@@ -333,16 +592,8 @@ def significant_changes?(updated_file,current_file,ignore_formatting,ignore_whit
       puts "Formatting XML and JSON before diff" if VERBOSE
       case File.extname(updated_file).downcase
       when ".xml"
-        updated_document = REXML::Document.new(File.read(updated_file))
-        current_document = REXML::Document.new(File.read(current_file))
-        formatter = REXML::Formatters::Pretty.new(2)
-        formatter.compact = true
-        updated_io = StringIO.new
-        current_io = StringIO.new
-        formatter.write(updated_document, updated_io)
-        formatter.write(current_document, current_io)
-        updated_content = updated_io.string
-        current_content = current_io.string
+        updated_content = canonicalize_xml(REXML::Document.new(File.read(updated_file)))
+        current_content = canonicalize_xml(REXML::Document.new(File.read(current_file)))
       when ".json"
         updated_content = JSON.pretty_generate(JSON.parse(File.read(updated_file)))
         current_content = JSON.pretty_generate(JSON.parse(File.read(current_file)))
@@ -401,38 +652,43 @@ def handle_file_change(file, event, apps_dir, ignore_formatting, ignore_whitespa
       return
     end
     
-    unless significant_changes?(file,"#{destination_dir}/#{File.basename(file)}",ignore_formatting,ignore_whitespace,ignore_blank_lines)
-      puts "No significant change, will not update"
-      return
+    project_root = extract_project_root_from_path(file)
+    with_source_file(file, project_root) do |source_file|
+      unless significant_changes?(source_file,"#{destination_dir}/#{File.basename(file)}",ignore_formatting,ignore_whitespace,ignore_blank_lines)
+        puts "No significant change, will not update"
+        next
+      end
+
+      FileUtils.cp(source_file, "#{destination_dir}/#{File.basename(file)}", noop: false, verbose: VERBOSE)
+      puts "Updated: #{file} in #{destination_dir}"
+
+      if log4j2_file?(file) && contains_monitor_interval?(file)
+        puts "Skipping forced re-deploy because log4j2.xml contains monitorInterval"
+      else
+        rebuild_mule_artifact(project_root,app_dir,notification) if project_root
+      end
+      puts "Updated: #{file}" if VERBOSE
     end
-    
-    FileUtils.cp(file, destination_dir, noop: false, verbose: VERBOSE)
-    puts "Updated: #{file} in #{destination_dir}"
-    
-    if log4j2_file?(file) && contains_monitor_interval?(file)
-      puts "Skipping forced re-deploy because log4j2.xml contains monitorInterval"
-    else
-      project_root = extract_project_root_from_path(file)
-      rebuild_mule_artifact(project_root,app_dir,notification) if project_root
-    end
-    puts "Updated: #{file}" if VERBOSE
     
   when :added
     destination_dir = "#{app_dir}/#{app_sub_dirs(file)}"
     create_destination_sub_dirs_if_missing(destination_dir)
     
+    project_root = extract_project_root_from_path(file)
+
     # Check if it's a directory
     if File.directory?(file)
       # Create the directory in the destination
       FileUtils.mkdir_p("#{destination_dir}/#{File.basename(file)}", noop: false, verbose: VERBOSE)
       puts "Created directory: #{file} in #{destination_dir}"
+      rebuild_mule_artifact(project_root,app_dir,notification) if project_root
     else
-      FileUtils.cp(file, destination_dir, noop: false, verbose: VERBOSE)
-      puts "Added: #{file} in #{destination_dir}"
+      with_source_file(file, project_root) do |source_file|
+        FileUtils.cp(source_file, "#{destination_dir}/#{File.basename(file)}", noop: false, verbose: VERBOSE)
+        puts "Added: #{file} in #{destination_dir}"
+        rebuild_mule_artifact(project_root,app_dir,notification) if project_root
+      end
     end
-    
-    project_root = extract_project_root_from_path(file)
-    rebuild_mule_artifact(project_root,app_dir,notification) if project_root
     
   when :removed
     destination_dir = "#{app_dir}#{app_sub_dirs(file)}"
@@ -450,6 +706,14 @@ def handle_file_change(file, event, apps_dir, ignore_formatting, ignore_whitespa
     project_root = extract_project_root_from_path(file)
     rebuild_mule_artifact(project_root,app_dir,notification) if project_root
   end
+end
+
+# Never let one file's failure abort the rest of a change batch
+def handle_file_change_safely(file, event, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification)
+  handle_file_change(file, event, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification)
+rescue => e
+  puts "ERROR processing file #{file}: #{e.message}"
+  puts e.backtrace.join("\n") if VERBOSE
 end
 
 def watch_mule_and_resources_hybrid(apps_dir,projects_dir,ignore_formatting,ignore_whitespace,ignore_blank_lines,notification,follow_symlinks,symlink_interval)
@@ -474,9 +738,9 @@ def watch_mule_and_resources_hybrid(apps_dir,projects_dir,ignore_formatting,igno
       # Use Listen for all original directories (it will ignore external symlinks)
       listener = Listen.to(*dirs) do |modified, added, removed|
         puts "Changes detected (Listen)" if VERBOSE
-        modified.each { |file| handle_file_change(file, :modified, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
-        added.each { |file| handle_file_change(file, :added, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
-        removed.each { |file| handle_file_change(file, :removed, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
+        modified.each { |file| handle_file_change_safely(file, :modified, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
+        added.each { |file| handle_file_change_safely(file, :added, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
+        removed.each { |file| handle_file_change_safely(file, :removed, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
       end
       listener.start
       
@@ -564,9 +828,9 @@ end
 def start_listen_watcher(dirs, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification)
   listener = Listen.to(*dirs) do |modified, added, removed|
     puts "Changes detected" if VERBOSE
-    modified.each { |file| handle_file_change(file, :modified, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
-    added.each { |file| handle_file_change(file, :added, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
-    removed.each { |file| handle_file_change(file, :removed, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
+    modified.each { |file| handle_file_change_safely(file, :modified, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
+    added.each { |file| handle_file_change_safely(file, :added, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
+    removed.each { |file| handle_file_change_safely(file, :removed, apps_dir, ignore_formatting, ignore_whitespace, ignore_blank_lines, notification) }
   end
   listener.start
 end
@@ -576,7 +840,7 @@ def watch_mule_and_resources_listener(apps_dir,projects_dir,ignore_formatting,ig
   watch_mule_and_resources_hybrid(apps_dir,projects_dir,ignore_formatting,ignore_whitespace,ignore_blank_lines,notification,false,1.1)
 end
 
-def watch_pom_files(projects_dir,apps_dir,notification,pom_interval)
+def watch_pom_files(projects_dir,apps_dir,notification,pom_interval,rebuild_enabled)
   # We use filewatcher, that polls for changes, because using eventbase file listenter is to slow for large folder structures with lots of changes going on, 
   # for example when we run mvn clean package.
   # I have not found an platform independent filewatcher the handles ignore in an efficent way
@@ -601,26 +865,37 @@ def watch_pom_files(projects_dir,apps_dir,notification,pom_interval)
           changes.each do |filename, event|
             begin
               next if ignore_file?(filename)
-              app_dir = "#{apps_dir}/#{extract_project_name_from_pom(filename)}"
+              project_name = extract_project_name_from_pom(filename, quiet: true)
+              if project_name.nil?
+                # e.g. an aggregator/parent pom, not a deployable app
+                puts "Skipping pom without <name>: #{filename}" if VERBOSE
+                next
+              end
+              app_dir = "#{apps_dir}/#{project_name}"
               next unless app_deployed?(app_dir)
               
               case event.to_s
               when 'updated'
                 puts 'POM file updated'
                 xml_content = File.read(filename)
-                new_state = hash_dependencies(xml_content)
+                new_state = pom_file_state(xml_content)
                 current_pom_state[filename] = new_state
-                puts "Last pom state hash: #{pom_state[filename][:hash]}" if VERBOSE
+                puts "Last pom state hash: #{pom_state[filename][:hash]}" if VERBOSE && pom_state[filename]
                 # This should not really happen, could probably be removed
                 if pom_state[filename] == nil
                   puts "Change tracking new pom file: #{filename}"
-                elsif pom_state[filename][:hash] != new_state[:hash]
-                  puts "Change detected in dependencies of pom file: #{filename}"
+                elsif pom_rebuild_worthy?(pom_state[filename], new_state)
+                  puts "Change detected in dependencies/properties/profiles/resources of pom file: #{filename}"
                   if VERBOSE
                     diff = Diffy::Diff.new(pom_state[filename][:content], new_state[:content], :allow_empty_diff => true, :include_plus_and_minus_in_html => false)
                     puts "POM Diff:\n#{diff}"
                   end
-                  rebuild_project(filename,apps_dir,notification)
+                  if rebuild_enabled
+                    # A full rebuild resolves new dependencies and re-applies Maven resource filtering
+                    rebuild_project(filename,apps_dir,notification)
+                  else
+                    puts "WARNING: The pom change requires a rebuild, the deployed app is now stale. Start with -p/--watch-pom to rebuild automatically, or rebuild manually."
+                  end
                 end
               when 'created'
                 # TODO Should trigger a re-intialization of the mule and resource listener
@@ -690,7 +965,9 @@ end
 
 def run(options)
   watch_mule_and_resources_hybrid(options.apps_dir,options.projects_dir,options.ignore_formatting,options.ignore_whitespace,options.ignore_blank_lines,options.notification,options.follow_symlinks,options.symlink_interval)
-  watch_pom_files(options.projects_dir,options.apps_dir,options.notification,options.pom_interval) if options.watch_pom
+  # The pom watcher rebuilds on relevant pom changes with -p/--watch-pom,
+  # and warns about them without it
+  watch_pom_files(options.projects_dir,options.apps_dir,options.notification,options.pom_interval,options.watch_pom)
   watch_deployments(options.apps_dir,options.notification) if options.watch_deployments && options.notification
 
   puts "Mule apps directory: #{options.apps_dir}"
