@@ -32,9 +32,8 @@ func watchDeployments() {
 	})
 }
 
-// tailFile is a portable replacement for the `tail -F` the Ruby version
-// shells out to: it follows the file across truncation and rotation, keeps
-// retrying if the file doesn't exist yet, and works on Windows
+// tailFile follows a file like `tail -F`: across truncation and rotation,
+// retrying if the file doesn't exist yet
 func tailFile(path string, onLine func(string)) {
 	var file *os.File
 	var reader *bufio.Reader

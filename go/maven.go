@@ -96,9 +96,9 @@ func filteredResourceDefs(pomFile string) ([]resourceDef, error) {
 	return defs, nil
 }
 
-// antPathMatch mimics the Ruby version's File.fnmatch with FNM_PATHNAME,
-// which gives ant semantics: '*' does not cross '/' and '**/' matches zero
-// or more directories (so '**/x' also matches a root-level x)
+// antPathMatch matches with ant-style semantics: '*' does not cross '/' and
+// '**/' matches zero or more directories (so '**/x' also matches a
+// root-level x)
 func antPathMatch(patterns []string, relativePath string) bool {
 	for _, pattern := range patterns {
 		if antPatternToRegexp(pattern).MatchString(relativePath) {
@@ -307,8 +307,8 @@ func dynamicMavenProperty(key, projectRoot string, properties map[string]string)
 var javaFormatTokenRegex = regexp.MustCompile(`(?s)'[^']*'|y+|M+|d+|E+|a|H+|h+|m+|s+|S+|X+|Z+|z+|.`)
 
 // javaFormatTime formats t according to a Java SimpleDateFormat pattern,
-// covering the same subset of tokens as the Ruby version. Unknown tokens are
-// emitted unchanged.
+// covering the tokens commonly used in maven.build.timestamp.format. Unknown
+// tokens are emitted unchanged.
 func javaFormatTime(t time.Time, javaFormat string) string {
 	var b strings.Builder
 	for _, token := range javaFormatTokenRegex.FindAllString(javaFormat, -1) {

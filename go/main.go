@@ -2,9 +2,6 @@
 // project source trees and syncs changed files into a deployed app's
 // directory (under $MULE_HOME/apps or --apps-dir), triggering Mule's hot
 // redeploy.
-//
-// This is a Go port of the Ruby mule-reactor script. It aims to behave the
-// same way and accept the same flags; see PORT-NOTES.md for the differences.
 package main
 
 import (
@@ -25,8 +22,6 @@ type Options struct {
 	FollowSymlinks    bool
 	ProjectsDir       string
 	AppsDir           string
-	SymlinkInterval   float64
-	PomInterval       float64
 	ResourceFiltering bool
 }
 
@@ -54,8 +49,6 @@ func main() {
 	noIgnoreBlankLines := flag.Bool("no-ignore-blank-lines", false, "Considers blank lines in all file types during comparison")
 	flag.StringVar(&opts.ProjectsDir, "projects-dir", wd, "Directory of projects (default: current directory)")
 	flag.StringVar(&opts.AppsDir, "apps-dir", filepath.Join(os.Getenv("MULE_HOME"), "apps"), "Directory to where the apps should be deployed (default: $MULE_HOME/apps)")
-	flag.Float64Var(&opts.SymlinkInterval, "symlink-interval", 1.1, "Accepted for compatibility with the Ruby version; unused, symlink targets are watched natively")
-	flag.Float64Var(&opts.PomInterval, "pom-interval", 1.1, "Accepted for compatibility with the Ruby version; unused, pom.xml files are watched natively")
 	flag.Parse()
 
 	opts.ResourceFiltering = !*noResourceFiltering

@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// XMLNode is a generic XML element tree, standing in for the REXML documents
-// the Ruby version traverses.
+// XMLNode is a generic XML element tree used to traverse poms and other
+// config XML without per-schema structs.
 type XMLNode struct {
 	XMLName  xml.Name
 	Attrs    []xml.Attr `xml:",any,attr"`
@@ -69,7 +69,7 @@ func (n *XMLNode) childrenNamed(name string) []*XMLNode {
 	return out
 }
 
-// descendants finds elements at any depth below n, like REXML's //name
+// descendants finds elements at any depth below n, like the XPath //name
 func (n *XMLNode) descendants(name string) []*XMLNode {
 	if n == nil {
 		return nil
@@ -85,8 +85,8 @@ func (n *XMLNode) descendants(name string) []*XMLNode {
 	return out
 }
 
-// canonical is a stable serialization used for hashing and sorting, filling
-// the role of REXML's element.to_s / canonicalize_xml in the Ruby version.
+// canonical is a stable single-line serialization used for hashing and
+// sorting elements.
 func (n *XMLNode) canonical() string {
 	var b strings.Builder
 	n.writeCanonical(&b)

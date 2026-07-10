@@ -180,9 +180,9 @@ func significantChanges(updatedFile, currentFile string) bool {
 			c, cerr := canonicalizeXML(currentData)
 			if uerr != nil || cerr != nil {
 				fmt.Printf("Error parsing XML: %v\n", firstError(uerr, cerr))
-				// Matches the Ruby version: an unparseable XML file (e.g. a
-				// half-written save) is treated as not significant, so the
-				// last good deployed copy is kept
+				// An unparseable XML file (e.g. a half-written save) is
+				// treated as not significant, so the last good deployed
+				// copy is kept
 				return false
 			}
 			updatedContent, currentContent = u, c
@@ -224,8 +224,8 @@ func canonicalizeJSON(data []byte) (string, error) {
 	return string(out), nil
 }
 
-// normalizeForDiff applies the equivalent of the Ruby version's diff -w
-// (ignore all whitespace) and -B (ignore blank lines) flags before comparing
+// normalizeForDiff applies the equivalent of diff's -w (ignore all
+// whitespace) and -B (ignore blank lines) flags before comparing
 func normalizeForDiff(content string) string {
 	lines := strings.Split(content, "\n")
 	out := make([]string, 0, len(lines))

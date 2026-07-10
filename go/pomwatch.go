@@ -118,10 +118,10 @@ func initializePomState(projectsDir string) map[string]pomState {
 	return states
 }
 
-// watchPomFiles watches the pom.xml files of each project. Unlike the Ruby
-// version there is no polling: fsnotify watches are per-directory and
-// non-recursive, so only the projects dir and each project root are watched
-// and the target/ event storm from `mvn clean package` never reaches us.
+// watchPomFiles watches the pom.xml files of each project. fsnotify watches
+// are per-directory and non-recursive, so only the projects dir and each
+// project root are watched and the target/ event storm from
+// `mvn clean package` never reaches us.
 func watchPomFiles() {
 	if opts.Verbose {
 		fmt.Println("Tracking changes in pom.xml files")
@@ -267,8 +267,7 @@ func rebuildProject(pomFile string) {
 	if opts.Notification {
 		sendNotification("🛠️", "Rebuilding: "+projectName)
 	}
-	// Unlike the Ruby version this doesn't go through a shell, so it also
-	// works on Windows. TODO: Make the build command configurable
+	// TODO: Make the build command configurable
 	cmd := exec.Command("mvn", "clean", "package", "-DskipTests")
 	cmd.Dir = projectRoot
 	cmd.Stdout = os.Stdout

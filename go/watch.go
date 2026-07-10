@@ -14,8 +14,8 @@ import (
 )
 
 // Editors typically fire several events per save (write + rename + chmod);
-// changes are collected until the burst quiets down, mirroring how the Listen
-// gem batched events for the Ruby version
+// changes are collected until the burst quiets down and then handled as one
+// batch
 const debounceDelay = 300 * time.Millisecond
 
 func watchDirs(projectsDir string) []string {
@@ -87,11 +87,10 @@ func watchMuleAndResources() {
 
 // addTree watches realDir and everything below it. logicalDir is the path as
 // seen from the project tree; it differs from realDir below external
-// symlinks, whose resolved targets are watched directly. That replaces the
-// Ruby version's polling-based hybrid symlink mode: fsnotify gets native
-// events from the target directory itself. Files discovered while adding are
-// appended to newFiles (when non-nil) so new directories can report their
-// contents as added.
+// symlinks, whose resolved targets are watched directly so changes behind
+// them produce native events. Files discovered while adding are appended to
+// newFiles (when non-nil) so new directories can report their contents as
+// added.
 func (w *sourceWatcher) addTree(realDir, logicalDir string, newFiles *[]string) {
 	if err := w.fsw.Add(realDir); err != nil {
 		fmt.Printf("WARNING: could not watch %s: %v\n", realDir, err)
