@@ -5,6 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Rules
 
 - Do not include a `Co-Authored-By: Claude ...` line in commit messages.
+- Always run gofmt before committing Go code: `gofmt -l go/` must report nothing (fix with `gofmt -w`).
 
 ## What this is
 
@@ -15,7 +16,8 @@ MuleReactor is a hot-deployment tool for Mule applications: it watches Mule proj
 - Ruby 3.x only (pinned to 3.4.3 in `.tool-versions`); Ruby 4 is not supported.
 - Runtime gems (installed globally, no Bundler): `listen`, `filewatcher`, `diffy` (`open3`, `rexml`, `json` come from stdlib).
 - Run: `./mule-reactor --help` for all options. Typical dev invocation: `./mule-reactor -v --projects-dir <dir> --apps-dir <dir>`.
-- There is no test suite and no linter. Syntax-check with `ruby -c mule-reactor`. Real verification requires a Mule runtime or Anypoint Studio; `test-listen.rb`, `setup-symlink-test.sh`, `detect-symlinks.rb`, `hybrid-watcher.rb`, `test-watch/`, `test-external/` are untracked manual-testing scratch scripts for the file-watching behavior, not part of the tool.
+- The Ruby script has no test suite and no linter. Syntax-check with `ruby -c mule-reactor`. Real verification requires a Mule runtime or Anypoint Studio; `test-listen.rb`, `setup-symlink-test.sh`, `detect-symlinks.rb`, `hybrid-watcher.rb`, `test-watch/`, `test-external/` are untracked manual-testing scratch scripts for the file-watching behavior, not part of the tool.
+- **Go version** in `go/`: a reimplementation with friendlier defaults (see `go/README.md` and `go/MIGRATING-FROM-RUBY.md`). Build with `cd go && go build -o mule-reactor .`; run its test suite with `go test ./...` (unit tests with temp-dir fixtures; the live watcher event flow still needs manual verification against a Mule runtime). Tests share the package-global `opts` via the `setOpts` helper, so they must not use `t.Parallel`.
 
 ## Architecture
 

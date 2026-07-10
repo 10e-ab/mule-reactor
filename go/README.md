@@ -35,6 +35,8 @@ cd go
 go build -o mule-reactor .
 ```
 
+Run the tests with `go test ./...`.
+
 Then make sure *Build Automatically* is disabled in Anypoint Studio
 (Project → Build Automatically).
 
