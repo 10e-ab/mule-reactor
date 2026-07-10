@@ -15,14 +15,14 @@ It listens for file changes in your Mule projects and automatically deploys the 
 
 ## Prerequisites
 
-- Ruby 
+- Ruby 3.x (Ruby 4 is not supported)
 - [Listen](https://github.com/guard/listen) gem
 - [Filewatcher](https://github.com/filewatcher/filewatcher) gem
 - Mule runtime or Anypoint Studio setup
 
 ## Installation
 
-1. Ensure Ruby is [installed](https://www.ruby-lang.org/en/documentation/installation) on your system.
+1. Ensure Ruby 3.x is [installed](https://www.ruby-lang.org/en/documentation/installation) on your system (Ruby 4 is not supported).
 2. Install the required gems:
 ```
 gem install listen
@@ -214,6 +214,7 @@ then Maven replaces `${...}` tokens in those files at build time — and syncing
 - `project.groupId`, `project.artifactId`, `project.version`, `project.name`, `project.basedir` (falling back to the `<parent>` values when inherited)
 - `maven.build.timestamp`, honoring `maven.build.timestamp.format` — substituted with a fixed epoch sentinel (`1970-01-01T00:00:00Z`) rather than the current time. MuleReactor didn't build anything, so a real timestamp would be a lie — and the sentinel keeps filtered output deterministic, so unchanged files diff as identical and don't trigger needless redeploys
 - Live git values matching what `git-commit-id-maven-plugin` would inject: `git.commit.id`, `git.commit.id.abbrev`, `git.branch`, `git.dirty`
+- `user.name` (the JVM system property Maven interpolates), resolved from `$USER`/`$USERNAME`
 
 Unknown tokens are left untouched (as Maven does) with a warning. Files not covered by a filtered resource — including binaries like keystores — are synced byte-for-byte as before. Note that properties inherited from a parent pom's `<properties>` section are not resolved (only the parent's coordinates are), since the parent pom is typically not available on disk.
 
