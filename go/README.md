@@ -23,9 +23,23 @@ dependency ([fsnotify](https://github.com/fsnotify/fsnotify)).
 
 `--apps-dir` defaults to `$MULE_HOME/apps`; `--projects-dir` defaults to the
 current directory. `-p` rebuilds on relevant pom changes, `-n` enables
-notifications (via a `mule-reactor-notifier` script on PATH, examples in
-`notifiers/`), `-d` with `-n` notifies on deployment status, `-s` follows
+notifications, `-d` with `-n` notifies on deployment status, `-s` follows
 symlinks.
+
+## Notifications
+
+With `-n`, notification delivery is resolved once at startup (a line says
+which is active):
+
+1. **`MULE_REACTOR_NOTIFIER=/path/to/script`** — an explicit notifier
+   script; it is run through a shell with two arguments, title and message.
+2. **`mule-reactor-notifier` on PATH** — same contract; examples in
+   `notifiers/`. Use a script for custom behavior: sounds, icons, Slack
+   webhooks, whatever.
+3. **Built-in** — native desktop notifications on macOS, Linux and Windows
+   (via [beeep](https://github.com/gen2brain/beeep)); no setup required.
+
+A script always wins over the built-in — putting one on PATH is the opt-in.
 
 ## Relation to the Ruby version
 
@@ -68,6 +82,9 @@ Differences:
   recreated (e.g. by a branch switch) is re-watched automatically, new
   project directories get their pom.xml tracked without a restart, and a
   crashed watcher backend restarts itself instead of going silent.
+- **Notifications work without a script**: Ruby requires a
+  `mule-reactor-notifier` on PATH; here that script is optional (it still
+  takes precedence when present) thanks to the built-in notifier.
 - **Windows**: the two documented Ruby limits (shelling out for `mvn`, and
   `tail -F` for the deployment log) are native here — `mvn` runs without a
   shell and the log tail is implemented in Go. Windows remains untested.

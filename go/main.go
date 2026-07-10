@@ -73,6 +73,7 @@ func normalizePath(p string) string {
 }
 
 func run() {
+	initNotifier()
 	watchMuleAndResources()
 	// The pom watcher rebuilds on relevant pom changes with -p/--watch-pom,
 	// and warns about them without it
