@@ -1,126 +1,260 @@
-# mule-reactor (Go)
+# MuleReactor
 
-A Go implementation of `mule-reactor`: watch Mule project source trees and
-sync changed files into the deployed app's directory (under `$MULE_HOME/apps`
-or `--apps-dir`) to trigger Mule's hot redeploy.
+MuleReactor is a tool designed to replace and improve the Anypoint Studio
+"Build Automatically" feature, enabling faster hot deployment of Mule
+applications. It also works fine for other IDEs/editors with a standalone
+Mule runtime — or even better, combining Anypoint Studio with an editor like
+VIM or Emacs. It listens for file changes in your Mule projects and
+automatically deploys the changes, streamlining the development and testing
+process.
 
-## Build
+## Features
+
+- **Real-time deployment**: syncs changes into the deployed app as soon as
+  files are modified, triggering Mule's hot redeploy.
+- **Zero configuration**: notifications, deployment status watching,
+  pom-triggered rebuilds and symlink following all work out of the box.
+- **Comprehensive file support**: property files, `log4j2.xml` and other
+  resources are handled, and Mule XML configuration files can be added,
+  renamed and removed on the fly.
+- **Maven resource filtering**: files the pom marks as filtered
+  (`<resource><filtering>true</filtering>`) get their `${...}` tokens
+  substituted on sync, mirroring `mvn process-resources`. See
+  [Maven Resource Filtering](#maven-resource-filtering).
+- **Noise suppression**: XML/JSON saves that only change formatting don't
+  trigger a redeploy.
+- **Editor agnostic, single binary**: one self-contained executable, no
+  runtime dependencies.
+
+## Installation
+
+Build the binary (requires Go ≥ 1.21) and put it on your PATH:
 
 ```
 cd go
 go build -o mule-reactor .
 ```
 
-Requires Go ≥ 1.21. Produces a single self-contained binary with one external
-dependency ([fsnotify](https://github.com/fsnotify/fsnotify)).
+Then make sure *Build Automatically* is disabled in Anypoint Studio
+(Project → Build Automatically).
 
-## Run
+## Usage
+
+Open a terminal in your project's root directory (or a directory containing
+several Mule projects) and run:
 
 ```
-./mule-reactor --help
-./mule-reactor -v --projects-dir <dir> --apps-dir <mule-home>/apps
+mule-reactor
 ```
 
-`--apps-dir` defaults to `$MULE_HOME/apps`; `--projects-dir` defaults to the
-current directory.
+Then deploy your application once, normally — run it from Anypoint Studio,
+or copy the app jar into the runtime's `apps` directory. From that point,
+changes you save are synced into the deployed application and hot deployed
+almost instantly.
 
-Everything else is on by default: notifications, deployment watching,
-pom-triggered rebuilds and symlink following. Opt out with:
+### Directories
+
+- `--projects-dir <dir>` — where to look for Mule projects (default: the
+  current directory; projects one level down are found too)
+- `--apps-dir <dir>` — the deployed apps directory (default:
+  `$MULE_HOME/apps`)
+
+```
+mule-reactor --apps-dir /Applications/AnypointStudio.app/Contents/Eclipse/plugins/org.mule.tooling.server.4.9.ee_.../mule/apps
+```
+
+### Default behavior and opting out
+
+Everything is on by default. Opt out with:
 
 - `--no-notification` — no desktop notifications (implies
   `--no-watch-deployments`)
-- `--no-watch-deployments` — don't tail the server log for deployment status
-- `--no-watch-pom` — don't rebuild on rebuild-worthy pom changes, print a
-  stale-app warning instead
-- `--no-follow-symlinks` — don't follow symlinks out of the project trees
+- `--no-watch-deployments` — don't tail the server log for deployment
+  success/failure notifications
+- `--no-watch-pom` — don't rebuild when a pom changes in a rebuild-worthy
+  way; print a stale-app warning instead
+- `--no-follow-symlinks` — don't follow symlinks pointing outside the
+  project source trees
+- `--no-resource-filtering` — sync filtered resource files as-is, without
+  `${...}` substitution
+- `--no-ignore-formatting` — treat XML/JSON formatting-only changes as
+  significant
+- `-v` / `--verbose` — verbose output
 
-The Ruby version's opt-in flags (`-n`, `-d`, `-p`, `-s` and their long
-forms, plus `--no-ignore-whitespace`/`--no-ignore-blank-lines`) are still
-accepted and ignored, so existing wrapper scripts keep working.
+### Rebuilds
 
-## Rebuilds
+A rebuild-worthy pom change (dependencies, parent — plus properties,
+profiles and resources when resource filtering is on) runs
+`mvn clean package -DskipTests` in the project root and copies the jar to
+the apps dir. Whitespace-only pom edits are ignored.
 
-A rebuild-worthy pom change runs `mvn clean package -DskipTests` in the
-project root and copies the jar to the apps dir. Set
-`MULE_REACTOR_BUILD_COMMAND` to override the build command; it runs through
-a shell in the project root, so wrappers, extra flags and pipes work:
+Set `MULE_REACTOR_BUILD_COMMAND` to override the build command; it runs
+through a shell in the project root, so wrappers, extra flags and pipes
+work:
 
 ```
 MULE_REACTOR_BUILD_COMMAND="mvnd clean package -DskipTests -Pdev" mule-reactor
 ```
 
-## Notifications
+### Notifications
 
-With `-n`, notification delivery is resolved once at startup (a line says
-which is active):
+Desktop notifications work out of the box on macOS, Linux and Windows (via
+[beeep](https://github.com/gen2brain/beeep)).
 
-1. **`MULE_REACTOR_NOTIFIER=/path/to/script`** — an explicit notifier
-   script; it is run through a shell with two arguments, title and message.
-2. **`mule-reactor-notifier` on PATH** — same contract; examples in
-   `notifiers/`. Use a script for custom behavior: sounds, icons, Slack
-   webhooks, whatever.
-3. **Built-in** — native desktop notifications on macOS, Linux and Windows
-   (via [beeep](https://github.com/gen2brain/beeep)); no setup required.
+To customize delivery — sounds, icons, Slack webhooks, whatever — point
+`MULE_REACTOR_NOTIFIER` at a script. It is run through a shell with two
+arguments: the title and the message. Example scripts are in `notifiers/`:
+the macOS one uses [terminal-notifier](https://github.com/julienXX/terminal-notifier)
+(`brew install terminal-notifier`), the GNOME one uses `gdbus`. Test a
+script by hand:
 
-A script always wins over the built-in — putting one on PATH is the opt-in.
+```
+your-notifier "<title>" "<message>"
+```
 
-## Relation to the Ruby version
+The active notifier is announced at startup.
 
-This is a port of the Ruby `mule-reactor` script in the repository root and
-behaves the same way: which directories are watched, when a change is synced
-or suppressed as insignificant, Maven resource filtering, pom
-rebuild-worthiness hashing, `mule-artifact.json` rewriting, and notifications
-all follow the Ruby implementation.
+### Symbolic links
 
-Differences:
+Symlinks pointing outside the project trees are followed by default: their
+targets are watched natively, and changes behind them sync as if they lived
+at the symlink's location. This is particularly useful when API
+specifications (RAML/OAS) are maintained in separate repositories and
+linked into projects — e.g. `src/main/resources/api` being a symlink to an
+API-spec checkout. Project directories that are themselves symlinks work
+too. Disable with `--no-follow-symlinks`.
 
-- **The defaults are inverted.** Ruby's opt-in behaviors (`-n`
-  notifications, `-d` deployment watching, `-p` pom rebuilds, `-s` symlink
-  following) are all on by default here, with `--no-*` flags to opt out.
-  The old opt-in flags are accepted as no-ops.
-- **Whitespace handling is per-file-type instead of flag-driven.** XML and
-  JSON are canonicalized so formatting-only saves don't redeploy; every
-  other file type is compared exactly, because whitespace can be
-  semantically meaningful (`.properties` values, DataWeave). This replaces
-  Ruby's global `diff -w -B` comparison and its
-  `--no-ignore-whitespace`/`--no-ignore-blank-lines` flags.
-- **No polling, and no `--symlink-interval` / `--pom-interval` flags.** The
-  Ruby version polls pom.xml files (the Listen gem watches recursively and
-  drowns in `target/` churn during builds) and polls external symlinks
-  (Listen cannot follow them). fsnotify watches are per-directory and
-  non-recursive, so the pom watcher simply never watches `target/`, and `-s`
-  watches resolved symlink targets natively. Both flags are gone; remove them
-  from any wrapper scripts when switching.
-- **Combined short flags don't work**: use `-v -p`, not `-vp`. Flags accept
-  both `-flag` and `--flag`. `-h/--help` output is generated by Go's flag
-  package.
-- **Event classification**: added vs modified is tracked with a known-files
-  set (editors save via create+rename, which raw fsnotify reports as Create).
-  mtime-only changes (`touch`) arrive as Chmod events and are ignored.
-- **`mule-artifact.json` key order**: keys are written alphabetically instead
-  of preserving the original order. Same content, and Mule parses it either
-  way.
-- **XML canonicalization** internals differ from REXML's pretty printer, but
-  both sides of every comparison use the same canonicalizer, so the
-  "significant change" answer is the same. As in the Ruby version, an
-  unparseable XML file is treated as "no significant change" so a
-  half-written save never clobbers the deployed copy. JSON saves that only
-  reorder keys are also suppressed (Ruby preserved key order and synced them).
-- **Ant patterns**: in filtered-resource includes/excludes a bare `**`
-  crosses directories (Maven semantics, e.g. `config/**` matches nested
-  files); Ruby's fnmatch treated it as a single path segment.
-- **Deployment log tail** reports only lines written after startup; Ruby's
-  `tail -F` replayed the last 10 lines, producing stale notifications.
-- **Extra robustness**: a watched `src/main/...` root that is deleted and
-  recreated (e.g. by a branch switch) is re-watched automatically, new
-  project directories get their pom.xml tracked without a restart, and a
-  crashed watcher backend restarts itself instead of going silent.
-- **Notifications work without a script**: Ruby requires a
-  `mule-reactor-notifier` on PATH; here that script is optional (it still
-  takes precedence when present) thanks to the built-in notifier.
-- **Windows**: the two documented Ruby limits (shelling out for `mvn`, and
-  `tail -F` for the deployment log) are native here — `mvn` runs without a
-  shell and the log tail is implemented in Go. Windows remains untested.
-- **macOS watcher backend**: fsnotify uses kqueue (one file descriptor per
-  watched file/dir) rather than FSEvents. Fine for normal project sizes; a
-  huge resources tree could hit fd limits where the Ruby version would not.
+### What counts as a significant change
+
+A save only triggers a sync (and redeploy) when it changes something real:
+
+- **XML and JSON** files are canonicalized before comparison, so
+  formatting-only changes — indentation, line breaks — don't redeploy.
+  Disable with `--no-ignore-formatting`.
+- **Every other file type** is compared exactly. Whitespace can be
+  semantically meaningful in `.properties` values or DataWeave, so it is
+  never ignored.
+- Files over 1 MB are synced without comparison.
+- A `log4j2.xml` with `monitorInterval` set is synced without forcing a
+  redeploy — Mule reloads it on its own.
+
+## Maven Resource Filtering
+
+If a project's `pom.xml` declares filtered resources, for example:
+
+```xml
+<resources>
+  <resource>
+    <filtering>true</filtering>
+    <directory>src/main/resources</directory>
+    <includes>
+      <include>mule-application.properties</include>
+    </includes>
+  </resource>
+</resources>
+```
+
+then Maven replaces `${...}` tokens in those files at build time — and
+syncing the raw source file would hand the runtime unresolved tokens
+(breaking, for instance, an `api.raml=resource::...:${raml.version}:...`
+reference). MuleReactor detects files covered by a `filtering=true`
+resource (honoring `includes`/`excludes`) and substitutes their tokens
+before syncing:
+
+- `pom.xml` `<properties>` values (with nested `${...}` references
+  resolved), including properties from profiles that are active by default
+  or activated by a file `exists`/`missing` condition — profiles requiring
+  `-P` flags, settings.xml, JDK, OS or property activation are not
+  evaluated
+- `project.groupId`, `project.artifactId`, `project.version`,
+  `project.name`, `project.basedir` (falling back to the `<parent>` values
+  when inherited)
+- `maven.build.timestamp`, honoring `maven.build.timestamp.format` —
+  substituted with a fixed epoch sentinel (`1970-01-01T00:00:00Z`) rather
+  than the current time. MuleReactor didn't build anything, so a real
+  timestamp would be a lie — and the sentinel keeps filtered output
+  deterministic, so unchanged files diff as identical and don't trigger
+  needless redeploys
+- Live git values matching what `git-commit-id-maven-plugin` would inject:
+  `git.commit.id`, `git.commit.id.abbrev`, `git.branch`, `git.dirty`
+- `user.name` (the JVM system property Maven interpolates), resolved from
+  `$USER`/`$USERNAME`
+
+Unknown tokens are left untouched (as Maven does) with a warning. Files not
+covered by a filtered resource — including binaries like keystores — are
+synced byte-for-byte. If filtering fails (e.g. the pom is mid-edit), the
+file is not synced and the last good deployed copy is kept. Note that
+properties inherited from a parent pom's `<properties>` section are not
+resolved (only the parent's coordinates are), since the parent pom is
+typically not available on disk.
+
+Changes to the pom itself are detected too: any change to the
+`<dependencies>`, `<parent>`, `<properties>`, `<profiles>` or
+`<build><resources>` sections triggers a full rebuild — a rebuild is the
+one response that is always correct, since a property can feed dependency
+versions and filtered resources alike, and only Maven can package new
+artifacts into the app. With `--no-watch-pom` a stale-app warning is
+printed instead.
+
+With `--no-resource-filtering`, filtered resource files are synced as-is,
+tokens included, and the pom watcher stops reacting to
+property/profile/resources changes (they can't reach the deployed app
+without filtering); only dependency changes trigger a rebuild. Note this
+reopens the blind spot where a dependency version fed by a property
+(`<version>${some.version}</version>`) changes without triggering a
+rebuild.
+
+## Optional Configuration
+
+1. **Set `MULE_HOME`** so you don't have to pass `--apps-dir` every time:
+
+   ```bash
+   export MULE_HOME=/Applications/AnypointStudio.app/Contents/Eclipse/plugins/org.mule.tooling.server.4.9.ee_.../mule
+   ```
+
+2. **Update `log4j2.xml` for instant logging configuration**: adding a
+   `monitorInterval` attribute lets you change logging levels and formats
+   without a redeploy:
+
+   ```xml
+   <Configuration monitorInterval="10">
+   ```
+
+3. **Configure Mule to detect hot deploys faster** by adding
+   `-Dmule.launcher.changeCheckInterval=500` to your Run Configuration's VM
+   arguments (in Anypoint Studio: Run → Run Configurations… → VM Arguments).
+
+## Limitations
+
+- **Pre-processed resources**: Maven resource filtering is supported — see
+  above. Other kinds of build-time resource generation or modification are
+  not: the tool syncs the files as they are in your project directory, so
+  resources produced by other plugins will not be reflected in the hot
+  deployed application.
+
+- **Hot deploy reliability**: hot deployment, by its nature, can sometimes
+  fail or lead to unexpected behaviors due to the complexities of
+  application state and runtime management. If you encounter odd behavior,
+  perform a normal (cold) deployment of your application and let
+  MuleReactor handle subsequent hot deployments from that known good state.
+
+- **macOS file descriptors**: the file watcher uses kqueue, which costs one
+  file descriptor per watched file/directory. Fine for normal project
+  sizes; an enormous resources tree could approach fd limits.
+
+## Migrating from the Ruby version
+
+This is a Go reimplementation of the original Ruby `mule-reactor` script.
+Behavior is largely identical, but the defaults are friendlier and a few
+semantics improved — see [MIGRATING-FROM-RUBY.md](MIGRATING-FROM-RUBY.md).
+Old wrapper scripts keep working: the Ruby flags are accepted and ignored.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit pull requests or open
+issues to suggest improvements or add new features.
+
+## License
+
+MuleReactor is released under the MIT License. See the LICENSE file for
+more details.
