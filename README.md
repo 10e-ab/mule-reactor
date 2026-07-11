@@ -1,5 +1,12 @@
 # MuleReactor
 
+> **Note:** This branch preserves the original Ruby implementation of
+> MuleReactor. Active development has moved to the Go version on
+> [`main`](https://github.com/10e-ab/mule-reactor). The Go version behaves
+> the same way with friendlier defaults — see
+> [MIGRATING-FROM-RUBY.md](https://github.com/10e-ab/mule-reactor/blob/main/MIGRATING-FROM-RUBY.md).
+> This branch only receives critical fixes.
+
 MuleReactor is a tool designed to replace and improve the Anypoint Studio "Build Automatically" feature, enabling faster hot deployment of Mule applications in Anypoint Studio. But it also works fine for other IDEs/Editors with a standalone Mule runtime. Or even better, combining Anypoint Studio with an editor like VIM or Emacs.
 It listens for file changes in your Mule projects and automatically deploys the changes, streamlining the development and testing process.
 
