@@ -88,6 +88,19 @@ Everything is on by default. Opt out with:
   significant
 - `-v` / `--verbose` — verbose output
 
+Two comparison opt-ins relax the exact comparison in all file types, for
+workflows with expected whitespace churn:
+
+- `--ignore-whitespace` — ignore whitespace changes within lines (like
+  `diff -w`)
+- `--ignore-blank-lines` — ignore added/removed blank lines (like `diff -B`)
+
+> **Warning:** with `--ignore-whitespace`, whitespace-only edits inside
+> DataWeave scripts and `.properties` values (where whitespace can be
+> semantically meaningful, e.g. inside string literals) will NOT be
+> deployed — the save is treated as insignificant with no error. Only use
+> it if you understand that trade-off.
+
 ### Rebuilds
 
 A rebuild-worthy pom change (dependencies, parent — plus properties,
@@ -145,9 +158,10 @@ A save only triggers a sync (and redeploy) when it changes something real:
 - **XML and JSON** files are canonicalized before comparison, so
   formatting-only changes — indentation, line breaks — don't redeploy.
   Disable with `--no-ignore-formatting`.
-- **Every other file type** is compared exactly. Whitespace can be
-  semantically meaningful in `.properties` values or DataWeave, so it is
-  never ignored.
+- **Every other file type** is compared exactly by default. Whitespace can
+  be semantically meaningful in `.properties` values or DataWeave, so it is
+  not ignored unless you opt in with `--ignore-whitespace` /
+  `--ignore-blank-lines` (see the warning above).
 - Files over 1 MB are synced without comparison.
 - A `log4j2.xml` with `monitorInterval` set is synced without forcing a
   redeploy — Mule reloads it on its own.
@@ -261,9 +275,7 @@ rebuild.
 MuleReactor was originally a Ruby script; this Go implementation replaced
 it. The Ruby version is preserved on the
 [`ruby` branch](https://github.com/10e-ab/mule-reactor/tree/ruby) (tagged
-`ruby-final`) and only receives critical fixes. Behavior is largely
-identical with friendlier defaults, and Ruby-era flags are accepted with a
-deprecation warning, so old wrapper scripts keep working — see
+`ruby-final`) and only receives critical fixes — see
 [MIGRATING-FROM-RUBY.md](MIGRATING-FROM-RUBY.md) for the differences.
 
 ## Contributing

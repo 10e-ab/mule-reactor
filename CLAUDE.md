@@ -15,7 +15,7 @@ MuleReactor is a hot-deployment tool for Mule applications: it watches Mule proj
 
 - Build: `go build -o mule-reactor .` — run `./mule-reactor --help` for all options. Typical dev invocation: `./mule-reactor -v --projects-dir <dir> --apps-dir <dir>`.
 - Test: `go test ./...` (unit tests with temp-dir fixtures). Tests share the package-global `opts` via the `setOpts` helper, so they must not use `t.Parallel`. The live watcher event flow needs manual verification against a Mule runtime or Anypoint Studio.
-- Everything is on by default (notifications, deployment watching, pom rebuilds, symlink following) with `--no-*` opt-outs; Ruby-era opt-in flags are accepted as warned no-ops.
+- Everything is on by default (notifications, deployment watching, pom rebuilds, symlink following) with `--no-*` opt-outs; Ruby-era flags were removed and now error. `--ignore-whitespace`/`--ignore-blank-lines` opt into GNU `diff -w`/`-B` lax comparison (off by default — whitespace can be meaningful in .properties/DataWeave).
 
 ## Architecture
 

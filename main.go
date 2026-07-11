@@ -16,6 +16,8 @@ type Options struct {
 	WatchPom          bool
 	Notification      bool
 	IgnoreFormatting  bool
+	IgnoreWhitespace  bool
+	IgnoreBlankLines  bool
 	WatchDeployments  bool
 	FollowSymlinks    bool
 	ProjectsDir       string
@@ -39,35 +41,11 @@ func main() {
 	noFollowSymlinks := flag.Bool("no-follow-symlinks", false, "Do not follow symbolic links pointing outside the project source trees")
 	noResourceFiltering := flag.Bool("no-resource-filtering", false, "Disable Maven resource filtering: sync filtered resource files as-is, without substituting ${...} tokens. Pom property/profile/resources changes then no longer trigger rebuilds, only dependency changes do")
 	noIgnoreFormatting := flag.Bool("no-ignore-formatting", false, "Compare XML/JSON contents exactly instead of canonicalizing formatting first")
+	flag.BoolVar(&opts.IgnoreWhitespace, "ignore-whitespace", false, "Ignore whitespace changes within lines when comparing, in all file types (like diff -w). Off by default: whitespace can be meaningful in .properties or DataWeave files")
+	flag.BoolVar(&opts.IgnoreBlankLines, "ignore-blank-lines", false, "Ignore added or removed blank lines when comparing, in all file types (like diff -B)")
 	flag.StringVar(&opts.ProjectsDir, "projects-dir", wd, "Directory of projects (default: current directory)")
 	flag.StringVar(&opts.AppsDir, "apps-dir", os.Getenv("MULE_HOME")+"/apps", "Directory to where the apps should be deployed (default: $MULE_HOME/apps)")
-
-	// Flags from v1 (and the Ruby version) for behaviors that are now the
-	// default, accepted so existing wrappers keep working — but warned
-	// about, since silently ignoring e.g. -p would hide that --no-watch-pom
-	// elsewhere on the command line wins
-	deprecatedFlags := map[string]string{
-		"n":                     "notifications are on by default",
-		"notification":          "notifications are on by default",
-		"d":                     "deployment watching is on by default",
-		"watch-deployments":     "deployment watching is on by default",
-		"p":                     "pom rebuilds are on by default",
-		"watch-pom":             "pom rebuilds are on by default",
-		"s":                     "symlink following is on by default",
-		"follow-symlinks":       "symlink following is on by default",
-		"no-ignore-whitespace":  "whitespace outside XML/JSON formatting is always significant now",
-		"no-ignore-blank-lines": "blank lines outside XML/JSON formatting are always significant now",
-	}
-	var deprecated bool
-	for name, hint := range deprecatedFlags {
-		flag.BoolVar(&deprecated, name, false, "Deprecated and ignored: "+hint)
-	}
 	flag.Parse()
-	flag.Visit(func(f *flag.Flag) {
-		if hint, ok := deprecatedFlags[f.Name]; ok {
-			fmt.Printf("WARNING: -%s is deprecated and ignored (%s)\n", f.Name, hint)
-		}
-	})
 
 	opts.Notification = !*noNotification
 	opts.WatchDeployments = !*noWatchDeployments && opts.Notification

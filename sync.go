@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 func ensureTrailingSlash(path string) string {
@@ -144,9 +145,11 @@ func createDestinationSubDirsIfMissing(destinationDir string) {
 }
 
 // significantChanges tests if the changes are more than XML/JSON formatting.
-// Every other file type is compared exactly: whitespace can be semantically
-// meaningful in .properties or DataWeave files, so it is never ignored.
-// With --no-ignore-formatting XML/JSON are compared exactly too.
+// Every other file type is compared exactly by default: whitespace can be
+// semantically meaningful in .properties or DataWeave files. With
+// --no-ignore-formatting XML/JSON are compared exactly too; the
+// --ignore-whitespace/--ignore-blank-lines opt-ins relax the comparison for
+// all file types (GNU diff -w/-B semantics).
 func significantChanges(updatedFile, currentFile string) bool {
 	updatedInfo, err := os.Stat(updatedFile)
 	if err != nil {
@@ -209,11 +212,40 @@ func significantChanges(updatedFile, currentFile string) bool {
 			}
 		}
 	}
+	if opts.IgnoreWhitespace || opts.IgnoreBlankLines {
+		updatedContent = normalizeForDiff(updatedContent)
+		currentContent = normalizeForDiff(currentContent)
+	}
 	changed := updatedContent != currentContent
 	if opts.Verbose && changed {
 		fmt.Println("Diff: files differ after comparison")
 	}
 	return changed
+}
+
+// normalizeForDiff applies the equivalent of GNU diff's -w (ignore all
+// whitespace within lines) and -B (ignore blank lines) before comparing.
+// GNU-faithful: -B alone drops only completely empty lines, and -w alone
+// does not drop a new blank line; with both, whitespace-only lines have
+// already become empty and so count as blank, like GNU diff.
+func normalizeForDiff(content string) string {
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if opts.IgnoreWhitespace {
+			line = strings.Map(func(r rune) rune {
+				if unicode.IsSpace(r) {
+					return -1
+				}
+				return r
+			}, line)
+		}
+		if opts.IgnoreBlankLines && line == "" {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
 }
 
 func firstError(errs ...error) error {

@@ -16,19 +16,22 @@ Ruby's opt-in behaviors are on by default:
 | `-p` / `--watch-pom` | on by default; `--no-watch-pom` to disable |
 | `-s` / `--follow-symlinks` | on by default; `--no-follow-symlinks` to disable |
 
-The old opt-in flags are still **accepted and ignored** (with a startup
-warning naming the flag), so existing wrapper scripts keep working.
-Combined short flags (`-vndp`) do **not** work — Go's flag parsing requires
-them separated (`-v -n -d -p`).
+The old opt-in flags have been **removed** — passing them fails with an
+unknown-flag error, so delete them from wrapper scripts (the table above
+shows what replaced each one; usually nothing is needed, they are the
+defaults now). Combined short flags (`-vndp`) do **not** work either —
+Go's flag parsing requires them separated.
 
 ## Flags that are gone
 
+- `-n`, `-d`, `-p`, `-s` and their long forms — these behaviors are on by
+  default; use the `--no-*` flags to opt out.
 - `--symlink-interval`, `--pom-interval` — nothing polls anymore. The pom
   watcher gets native per-directory events (the `target/` storm from
   `mvn clean package` never reaches it), and symlink targets are watched
   natively.
-- `--no-ignore-whitespace`, `--no-ignore-blank-lines` — accepted but
-  ignored; see below.
+- `--no-ignore-whitespace`, `--no-ignore-blank-lines` — exact comparison is
+  the default now; see below.
 
 ## Whitespace handling is per-file-type
 
@@ -39,6 +42,13 @@ formatting-only saves don't redeploy, and **every other file type is
 compared exactly** — whitespace can be semantically meaningful in
 `.properties` values or DataWeave. If you ran the Ruby version with
 `--no-ignore-whitespace` for this reason, that behavior is now built in.
+
+To opt back into the Ruby-style lax comparison, `--ignore-whitespace` and
+`--ignore-blank-lines` restore GNU `diff -w` / `-B` semantics for all file
+types (both together ≈ the old Ruby default). **Warning:** with
+`--ignore-whitespace`, whitespace-only edits inside DataWeave scripts or
+`.properties` values are treated as insignificant and silently not
+deployed.
 
 Related nuances:
 

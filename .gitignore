@@ -2,3 +2,12 @@
 mule-reactor-notification
 
 /mule-reactor
+.DS_Store
+.claude/
+.tool-versions
+/detect-symlinks.rb
+/hybrid-watcher.rb
+/setup-symlink-test.sh
+/test-listen.rb
+/test-watch/
+/test-external/

@@ -156,6 +156,51 @@ func TestSignificantChangesNoIgnoreFormatting(t *testing.T) {
 	}
 }
 
+func TestSignificantChangesIgnoreWhitespaceOptIn(t *testing.T) {
+	o := defaultTestOpts()
+	o.IgnoreWhitespace = true
+	setOpts(t, o)
+	dir := t.TempDir()
+	writeFile(t, dir+"/u.properties", "key=a   b\n")
+	writeFile(t, dir+"/c.properties", "key=a b\n")
+	if significantChanges(dir+"/u.properties", dir+"/c.properties") {
+		t.Error("whitespace-only change must be ignored with --ignore-whitespace")
+	}
+	writeFile(t, dir+"/c2.properties", "key=a c\n")
+	if !significantChanges(dir+"/u.properties", dir+"/c2.properties") {
+		t.Error("real changes must survive --ignore-whitespace")
+	}
+	// GNU -w alone does not drop blank lines: an added blank line counts
+	writeFile(t, dir+"/u2.properties", "key=a b\n\n")
+	if !significantChanges(dir+"/u2.properties", dir+"/c.properties") {
+		t.Error("an added blank line is significant under -w alone, like GNU diff")
+	}
+}
+
+func TestSignificantChangesIgnoreBlankLinesOptIn(t *testing.T) {
+	o := defaultTestOpts()
+	o.IgnoreBlankLines = true
+	setOpts(t, o)
+	dir := t.TempDir()
+	writeFile(t, dir+"/u.properties", "key=a\n\nother=1\n")
+	writeFile(t, dir+"/c.properties", "key=a\nother=1\n")
+	if significantChanges(dir+"/u.properties", dir+"/c.properties") {
+		t.Error("blank-line-only change must be ignored with --ignore-blank-lines")
+	}
+	// GNU -B alone only ignores completely empty lines: whitespace-only
+	// lines still count
+	writeFile(t, dir+"/u2.properties", "key=a\n   \nother=1\n")
+	if !significantChanges(dir+"/u2.properties", dir+"/c.properties") {
+		t.Error("a whitespace-only line is not blank under -B alone, like GNU diff")
+	}
+	// with -w as well, whitespace-only lines become empty and count as blank
+	o.IgnoreWhitespace = true
+	setOpts(t, o)
+	if significantChanges(dir+"/u2.properties", dir+"/c.properties") {
+		t.Error("with -w and -B a whitespace-only line counts as blank, like GNU diff")
+	}
+}
+
 func TestSignificantChangesUnparseableDeployedCopy(t *testing.T) {
 	setOpts(t, defaultTestOpts())
 	dir := t.TempDir()
