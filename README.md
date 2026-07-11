@@ -267,8 +267,11 @@ rebuild.
   MuleReactor handle subsequent hot deployments from that known good state.
 
 - **macOS file descriptors**: the file watcher uses kqueue, which costs one
-  file descriptor per watched file/directory. Fine for normal project
-  sizes; an enormous resources tree could approach fd limits.
+  file descriptor per watched file/directory. The Go runtime raises the
+  process fd limit to the system's per-process maximum (typically ≥10,000
+  on macOS), so only very large watched trees — tens of thousands of files
+  — are affected, and failing watches are reported loudly at startup
+  (`WARNING: could not watch ...`).
 
 ## Previous Ruby version
 

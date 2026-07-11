@@ -96,5 +96,7 @@ multiple matches.
   `mvn`, `tail -F` for the log) don't apply — both are native. Windows
   remains untested.
 - **macOS watcher backend**: kqueue (one file descriptor per watched
-  file/dir) rather than FSEvents. Fine for normal project sizes; a huge
-  resources tree could hit fd limits where the Ruby version would not.
+  file/dir) rather than FSEvents. The Go runtime raises the fd limit to the
+  per-process maximum (typically ≥10,000 on macOS), so only very large
+  watched trees are affected — and failing watches are reported loudly at
+  startup, unlike the Ruby version which never needed the descriptors.
