@@ -1,7 +1,11 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func pomStateFromString(t *testing.T, content string) pomState {
@@ -101,22 +105,10 @@ func TestPomRebuildWorthy(t *testing.T) {
 
 func replaceOnce(t *testing.T, s, old, new string) string {
 	t.Helper()
-	replaced := ""
-	if idx := indexOf(s, old); idx >= 0 {
-		replaced = s[:idx] + new + s[idx+len(old):]
-	} else {
+	if !strings.Contains(s, old) {
 		t.Fatalf("substring %q not found", old)
 	}
-	return replaced
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
+	return strings.Replace(s, old, new, 1)
 }
 
 func TestInitializePomState(t *testing.T) {
@@ -139,13 +131,40 @@ func TestInitializePomState(t *testing.T) {
 }
 
 func TestBuildCommand(t *testing.T) {
-	cmd := buildCommand()
-	if cmd.Args[0] != "mvn" || len(cmd.Args) != 4 {
-		t.Errorf("default build command = %v", cmd.Args)
+	cmd, display := buildCommand()
+	if cmd.Args[0] != "mvn" || len(cmd.Args) != 4 || display != defaultBuildCommand {
+		t.Errorf("default build command = %v, displayed as %q", cmd.Args, display)
 	}
 	t.Setenv("MULE_REACTOR_BUILD_COMMAND", "echo custom && true")
-	cmd = buildCommand()
-	if cmd.Args[0] != "sh" || cmd.Args[1] != "-c" || cmd.Args[2] != "echo custom && true" {
-		t.Errorf("custom build command = %v, want sh -c <command>", cmd.Args)
+	cmd, display = buildCommand()
+	if cmd.Args[0] != "sh" || cmd.Args[1] != "-c" || cmd.Args[2] != "echo custom && true" || display != "echo custom && true" {
+		t.Errorf("custom build command = %v, displayed as %q", cmd.Args, display)
+	}
+}
+
+func TestSelectBuildJar(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir+"/pom.xml", `<project><artifactId>my-artifact</artifactId><name>My Nice Name</name></project>`)
+
+	if _, err := selectBuildJar(dir, dir+"/pom.xml", "My Nice Name"); err == nil {
+		t.Error("no jar in target/ must be an error")
+	}
+
+	// the jar is named by artifactId, not by the pom <name>
+	writeFile(t, dir+"/target/my-artifact-1.0-mule-application.jar", "old")
+	jar, err := selectBuildJar(dir, dir+"/pom.xml", "My Nice Name")
+	if err != nil || filepath.Base(jar) != "my-artifact-1.0-mule-application.jar" {
+		t.Errorf("artifactId-named jar should be found: (%q, %v)", jar, err)
+	}
+
+	// several versions (a build command without 'clean'): newest wins
+	writeFile(t, dir+"/target/my-artifact-1.1-mule-application.jar", "new")
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(dir+"/target/my-artifact-1.0-mule-application.jar", past, past); err != nil {
+		t.Fatal(err)
+	}
+	jar, err = selectBuildJar(dir, dir+"/pom.xml", "My Nice Name")
+	if err != nil || filepath.Base(jar) != "my-artifact-1.1-mule-application.jar" {
+		t.Errorf("newest jar should win: (%q, %v)", jar, err)
 	}
 }

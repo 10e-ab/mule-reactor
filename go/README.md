@@ -88,7 +88,10 @@ Everything is on by default. Opt out with:
 A rebuild-worthy pom change (dependencies, parent — plus properties,
 profiles and resources when resource filtering is on) runs
 `mvn clean package -DskipTests` in the project root and copies the jar to
-the apps dir. Whitespace-only pom edits are ignored.
+the apps dir. Whitespace-only pom edits are ignored. If several jars match
+in `target/` (e.g. a build command without `clean`), the newest one is
+deployed; a failed build keeps the previous pom baseline, so the next save
+retries the rebuild.
 
 Set `MULE_REACTOR_BUILD_COMMAND` to override the build command; it runs
 through a shell in the project root, so wrappers, extra flags and pipes

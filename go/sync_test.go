@@ -60,6 +60,18 @@ func TestIgnoreFile(t *testing.T) {
 	}
 }
 
+func TestIgnoreFileOnlyBelowProjectsDir(t *testing.T) {
+	o := defaultTestOpts()
+	o.ProjectsDir = "/home/alice/bin/mule-projects"
+	setOpts(t, o)
+	if ignoreFile("/home/alice/bin/mule-projects/app/src/main/mule/f.xml") {
+		t.Error("ignore names in the projects dir prefix must not disable the tool")
+	}
+	if !ignoreFile("/home/alice/bin/mule-projects/app/target/f.xml") {
+		t.Error("ignore names below the projects dir must still count")
+	}
+}
+
 func TestSignificantChanges(t *testing.T) {
 	setOpts(t, defaultTestOpts())
 	dir := t.TempDir()
@@ -135,8 +147,33 @@ func TestSignificantChangesNoIgnoreFormatting(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir+"/u.xml", "<a/>")
 	writeFile(t, dir+"/c.xml", "<a/>")
+	if significantChanges(dir+"/u.xml", dir+"/c.xml") {
+		t.Error("byte-identical files are never significant, even with --no-ignore-formatting")
+	}
+	writeFile(t, dir+"/c2.xml", "<a></a>") // same canonical form, different bytes
+	if !significantChanges(dir+"/u.xml", dir+"/c2.xml") {
+		t.Error("with --no-ignore-formatting formatting differences are significant")
+	}
+}
+
+func TestSignificantChangesUnparseableDeployedCopy(t *testing.T) {
+	setOpts(t, defaultTestOpts())
+	dir := t.TempDir()
+	// deployed copy corrupt, source good: must sync to repair it
+	writeFile(t, dir+"/u.xml", "<mule/>")
+	writeFile(t, dir+"/c.xml", "<mule><broken")
 	if !significantChanges(dir+"/u.xml", dir+"/c.xml") {
-		t.Error("with --no-ignore-formatting every change is significant (no comparison)")
+		t.Error("a corrupt deployed copy must be repairable")
+	}
+	// both sides unparseable (e.g. unsupported encoding): exact comparison
+	writeFile(t, dir+"/u2.xml", "<broken same")
+	writeFile(t, dir+"/c2.xml", "<broken same")
+	if significantChanges(dir+"/u2.xml", dir+"/c2.xml") {
+		t.Error("identical unparseable files are not significant")
+	}
+	writeFile(t, dir+"/c3.xml", "<broken other")
+	if !significantChanges(dir+"/u2.xml", dir+"/c3.xml") {
+		t.Error("differing unparseable files must still sync")
 	}
 }
 

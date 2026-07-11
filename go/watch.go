@@ -23,6 +23,11 @@ const debounceDelay = 300 * time.Millisecond
 // roots themselves) is skipped
 var sourceTreeRegex = regexp.MustCompile(`/src/main/(mule|resources)/`)
 
+// isUnder reports whether path is dir itself or lies below it
+func isUnder(path, dir string) bool {
+	return path == dir || strings.HasPrefix(path, dir+"/")
+}
+
 func watchDirs(projectsDir string) []string {
 	// Track current dir and one level down
 	pd := removeTrailingSlash(projectsDir)
@@ -34,7 +39,7 @@ func watchDirs(projectsDir string) []string {
 		pd + "/src/main/resources",
 	} {
 		for _, m := range globVisible(pattern, pd) {
-			if dirExists(m) {
+			if dirExists(m) && !ignoreFile(m+"/") {
 				dirs = append(dirs, m)
 			}
 		}
@@ -74,6 +79,9 @@ type sourceWatcher struct {
 	roots []string
 	deb   *debouncer
 	mu    sync.Mutex
+	// set once this instance has been replaced by a restart: batch
+	// processing and recovery goroutines must stand down
+	stopped bool
 	// files already seen, by logical path: distinguishes "added" from
 	// "modified", since editors often save via create+rename
 	known map[string]bool
@@ -84,6 +92,8 @@ type sourceWatcher struct {
 	linkMap map[string]string
 	// watched roots currently missing from disk, being polled for recreation
 	missingRoots map[string]bool
+	// symlink targets currently missing from disk, being polled for recreation
+	recovering map[string]bool
 }
 
 func watchMuleAndResources() {
@@ -97,29 +107,52 @@ func watchMuleAndResources() {
 		fmt.Println("Make sure that --projects-dir points to an existing directory")
 		os.Exit(1)
 	}
-	if err := startSourceWatcher(); err != nil {
+	if err := startSourceWatcher(nil); err != nil {
 		fmt.Printf("ERROR: could not start file watcher: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func startSourceWatcher() error {
+// startSourceWatcher builds a watcher over the project source trees.
+// prevRoots carries the previous instance's roots across a restart, so a
+// root that happens to be missing from disk at restart time is polled for
+// recreation instead of forgotten.
+func startSourceWatcher(prevRoots []string) error {
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return err
 	}
+	roots := watchDirs(opts.ProjectsDir)
+	for _, prev := range prevRoots {
+		found := false
+		for _, r := range roots {
+			if r == prev {
+				found = true
+				break
+			}
+		}
+		if !found {
+			roots = append(roots, prev)
+		}
+	}
 	w := &sourceWatcher{
 		fsw:          fsw,
-		roots:        watchDirs(opts.ProjectsDir),
+		roots:        roots,
 		known:        map[string]bool{},
 		watchedDirs:  map[string]bool{},
 		linkMap:      map[string]string{},
 		missingRoots: map[string]bool{},
+		recovering:   map[string]bool{},
 	}
 	w.deb = newDebouncer(debounceDelay, w.processBatch)
 	w.mu.Lock()
 	for _, dir := range w.roots {
-		w.addTree(dir, dir)
+		if dirExists(dir) {
+			w.addTree(dir, dir)
+		} else if !w.missingRoots[dir] {
+			w.missingRoots[dir] = true
+			go w.recoverRoot(dir)
+		}
 	}
 	w.mu.Unlock()
 	go w.eventLoop()
@@ -211,7 +244,7 @@ func (w *sourceWatcher) addSymlink(realPath, logicalPath string) ([]string, bool
 // insideRoots reports whether path lies under any watched root
 func (w *sourceWatcher) insideRoots(path string) bool {
 	for _, root := range w.roots {
-		if path == root || strings.HasPrefix(path, root+"/") {
+		if isUnder(path, root) {
 			return true
 		}
 	}
@@ -228,10 +261,8 @@ func (w *sourceWatcher) toLogical(realPath string) (string, string) {
 	}
 	best, bestLogical := "", ""
 	for real, logical := range w.linkMap {
-		if realPath == real || strings.HasPrefix(realPath, real+"/") {
-			if len(real) > len(best) {
-				best, bestLogical = real, logical
-			}
+		if isUnder(realPath, real) && len(real) > len(best) {
+			best, bestLogical = real, logical
 		}
 	}
 	if best == "" {
@@ -263,12 +294,20 @@ func (w *sourceWatcher) eventLoop() {
 }
 
 // restart rebuilds the watcher from scratch if its event stream dies, so a
-// backend failure degrades to a re-scan instead of silently stopping syncs
+// backend failure degrades to a re-scan instead of silently stopping syncs.
+// The old instance is fully stood down first: its debouncer stops firing and
+// its recovery goroutines see the stopped flag, so old and new instances can
+// never process the same app concurrently.
 func (w *sourceWatcher) restart() {
 	fmt.Println("ERROR: file watcher stopped, restarting...")
+	w.mu.Lock()
+	w.stopped = true
+	roots := append([]string(nil), w.roots...)
+	w.mu.Unlock()
+	w.deb.stop()
 	w.fsw.Close()
 	for {
-		if err := startSourceWatcher(); err == nil {
+		if err := startSourceWatcher(roots); err == nil {
 			return
 		}
 		time.Sleep(5 * time.Second)
@@ -276,6 +315,12 @@ func (w *sourceWatcher) restart() {
 }
 
 func (w *sourceWatcher) processBatch(paths []string) {
+	w.mu.Lock()
+	stopped := w.stopped
+	w.mu.Unlock()
+	if stopped {
+		return
+	}
 	if opts.Verbose {
 		fmt.Println("Changes detected")
 	}
@@ -339,28 +384,46 @@ func (w *sourceWatcher) handleGone(realPath, logical string) {
 		delete(w.known, logical)
 		emit = true
 	}
-	if w.watchedDirs[realPath] {
-		w.forgetSubtree(realPath, logical)
+	wasDir := w.watchedDirs[realPath]
+	if wasDir {
+		w.forgetSubtree(realPath)
 		emit = true
 	}
-	// A deleted symlink leaves no known/watchedDirs entry under its own
-	// path — its state is keyed by the resolved target — so drop every
-	// mapping whose logical side lived at or below the deleted path
+	// Symlink mappings at or below the gone path. When the project-side
+	// symlink itself is gone the mapping dies with it; when only the TARGET
+	// is gone (transiently deleted by a tool) the mapping is kept so the
+	// recreated target keeps syncing — a deleted directory target
+	// additionally gets a recovery poller, since its watches died with it
+	// and nothing watches its parent.
 	for real, logicalTarget := range w.linkMap {
-		if logicalTarget == logical || strings.HasPrefix(logicalTarget, logical+"/") {
-			w.fsw.Remove(real)
-			delete(w.linkMap, real)
-			delete(w.watchedDirs, real)
-			emit = true
+		if !isUnder(logicalTarget, logical) {
+			continue
+		}
+		if _, err := os.Lstat(logicalTarget); err == nil {
+			if real == realPath && wasDir && !w.recovering[real] {
+				w.recovering[real] = true
+				go w.recoverTarget(real, logicalTarget)
+			}
+			continue
+		}
+		w.fsw.Remove(real)
+		delete(w.linkMap, real)
+		delete(w.watchedDirs, real)
+		emit = true
+	}
+	// Forget known files below the deleted path — only a directory or a
+	// mapped subtree can have children, so plain file removals skip the sweep
+	if wasDir || logical != realPath {
+		for f := range w.known {
+			if strings.HasPrefix(f, logical+"/") {
+				delete(w.known, f)
+			}
 		}
 	}
-	for f := range w.known {
-		if strings.HasPrefix(f, logical+"/") {
-			delete(w.known, f)
-		}
-	}
+	// Watched roots at or below the gone path (a deleted project directory
+	// takes its roots with it) are polled for recreation
 	for _, root := range w.roots {
-		if realPath == root && !w.missingRoots[root] {
+		if isUnder(root, realPath) && !w.missingRoots[root] {
 			w.missingRoots[root] = true
 			go w.recoverRoot(root)
 		}
@@ -371,26 +434,38 @@ func (w *sourceWatcher) handleGone(realPath, logical string) {
 	}
 }
 
-// handleDir registers a directory that appeared inside a watched tree and
-// reports its files as added. The directory itself is not synced: it
-// materializes in the deployed app when a file inside it syncs, and creating
-// an empty directory should not force a redeploy.
+// followIfSymlink handles realPath when it is a symlink, mirroring the
+// startup scan: followed targets (external, with -s) are registered and
+// their files emitted as added; every other symlink is skipped. Returns true
+// when realPath was a symlink (handled either way).
+func (w *sourceWatcher) followIfSymlink(realPath, logical string) bool {
+	lst, err := os.Lstat(realPath)
+	if err != nil || lst.Mode()&fs.ModeSymlink == 0 {
+		return false
+	}
+	w.mu.Lock()
+	files, _ := w.addSymlink(realPath, logical)
+	w.mu.Unlock()
+	w.emitAdded(files)
+	return true
+}
+
+// handleDir registers a directory inside a watched tree and reports its
+// files as added. Already-watched directories are re-registered too: a
+// delete+recreate can collapse into a single event, leaving a dead kernel
+// watch behind. The directory itself is not synced — it materializes in the
+// deployed app when a file inside it syncs, and creating an empty directory
+// should not force a redeploy.
 func (w *sourceWatcher) handleDir(realPath, logical string) {
-	if lst, err := os.Lstat(realPath); err == nil && lst.Mode()&fs.ModeSymlink != 0 {
-		w.mu.Lock()
-		files, followed := w.addSymlink(realPath, logical)
-		w.mu.Unlock()
-		if followed {
-			w.emitAdded(files)
-			return
-		}
+	if w.followIfSymlink(realPath, logical) {
+		return
 	}
 	w.mu.Lock()
 	var files []string
-	// Only directories that belong to the project tree (directly, or mapped
-	// through a followed symlink) are picked up; siblings inside a watched
-	// external parent are not ours
-	if !w.watchedDirs[realPath] && (w.insideRoots(logical) || logical != realPath) {
+	// Only directories belonging to the project tree (directly, or mapped
+	// through a followed symlink) are ours; siblings inside a watched
+	// external parent are not
+	if w.insideRoots(logical) || logical != realPath {
 		files = w.addTree(realPath, logical)
 	}
 	w.mu.Unlock()
@@ -398,15 +473,8 @@ func (w *sourceWatcher) handleDir(realPath, logical string) {
 }
 
 func (w *sourceWatcher) handleFile(realPath, logical string) {
-	// A symlink created at runtime is followed like those found at startup
-	if lst, err := os.Lstat(realPath); err == nil && lst.Mode()&fs.ModeSymlink != 0 {
-		w.mu.Lock()
-		files, followed := w.addSymlink(realPath, logical)
-		w.mu.Unlock()
-		if followed {
-			w.emitAdded(files)
-			return
-		}
+	if w.followIfSymlink(realPath, logical) {
+		return
 	}
 	if !sourceTreeRegex.MatchString(logical) {
 		if opts.Verbose {
@@ -432,18 +500,13 @@ func (w *sourceWatcher) emitAdded(files []string) {
 	}
 }
 
-// forgetSubtree drops the bookkeeping for a removed directory. Must be
+// forgetSubtree drops the directory-watch bookkeeping for a removed
+// directory; symlink mappings are handled separately by handleGone. Must be
 // called with w.mu held.
-func (w *sourceWatcher) forgetSubtree(realDir, logicalDir string) {
+func (w *sourceWatcher) forgetSubtree(realDir string) {
 	for d := range w.watchedDirs {
-		if d == realDir || strings.HasPrefix(d, realDir+"/") {
+		if isUnder(d, realDir) {
 			delete(w.watchedDirs, d)
-		}
-	}
-	for real, logical := range w.linkMap {
-		if real == realDir || strings.HasPrefix(real, realDir+"/") ||
-			logical == logicalDir || strings.HasPrefix(logical, logicalDir+"/") {
-			delete(w.linkMap, real)
 		}
 	}
 }
@@ -454,15 +517,52 @@ func (w *sourceWatcher) forgetSubtree(realDir, logicalDir string) {
 func (w *sourceWatcher) recoverRoot(root string) {
 	for {
 		time.Sleep(2 * time.Second)
+		w.mu.Lock()
+		if w.stopped {
+			w.mu.Unlock()
+			return
+		}
 		if !dirExists(root) {
+			w.mu.Unlock()
 			continue
 		}
-		w.mu.Lock()
 		delete(w.missingRoots, root)
 		files := w.addTree(root, root)
 		w.mu.Unlock()
 		if opts.Verbose {
 			fmt.Printf("Re-watching restored directory %s\n", root)
+		}
+		w.emitAdded(files)
+		return
+	}
+}
+
+// recoverTarget waits for a deleted symlink target directory to reappear
+// while the project-side symlink still exists, then re-watches it and syncs
+// its files
+func (w *sourceWatcher) recoverTarget(target, logical string) {
+	for {
+		time.Sleep(2 * time.Second)
+		w.mu.Lock()
+		if w.stopped {
+			w.mu.Unlock()
+			return
+		}
+		if _, err := os.Lstat(logical); err != nil {
+			// the symlink itself is gone now: nothing to wait for
+			delete(w.recovering, target)
+			w.mu.Unlock()
+			return
+		}
+		if !dirExists(target) {
+			w.mu.Unlock()
+			continue
+		}
+		delete(w.recovering, target)
+		files := w.addTree(target, logical)
+		w.mu.Unlock()
+		if opts.Verbose {
+			fmt.Printf("Re-watching restored symlink target %s\n", target)
 		}
 		w.emitAdded(files)
 		return

@@ -304,6 +304,9 @@ func TestWithSourceFileFiltersAndCleansUp(t *testing.T) {
 	writeFile(t, dir+"/pom.xml", twoEntryPom)
 	file := dir + "/src/main/resources/app.properties"
 	writeFile(t, file, "env=${env}\n")
+	if err := os.Chmod(file, 0o640); err != nil {
+		t.Fatal(err)
+	}
 
 	var tempPath string
 	called := false
@@ -315,6 +318,9 @@ func TestWithSourceFileFiltersAndCleansUp(t *testing.T) {
 		}
 		if got := readFile(t, source); got != "env=dev\n" {
 			t.Errorf("filtered content = %q, want env=dev", got)
+		}
+		if info, err := os.Stat(source); err != nil || info.Mode().Perm() != 0o640 {
+			t.Errorf("temp file must carry the source permissions, got %v (%v)", info.Mode().Perm(), err)
 		}
 	})
 	if !called {

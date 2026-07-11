@@ -170,12 +170,14 @@ func filteredResource(file, projectRoot string) (bool, error) {
 					return false, err
 				}
 			}
-			directory = mavenTokenRegex.ReplaceAllStringFunc(directory, func(token string) string {
-				if value, ok := properties[token[2:len(token)-1]]; ok {
-					return value
-				}
-				return token
-			})
+			directory = resolveTokens(directory, properties)
+			if strings.Contains(directory, "${") {
+				// e.g. a property defined only in the parent pom, which is
+				// not available on disk — better to say so than to silently
+				// sync the resource unfiltered
+				fmt.Printf("WARNING: cannot resolve ${...} in resource directory %s, skipping this filtering entry\n", def.directory)
+				continue
+			}
 		}
 		resourceDir := ensureTrailingSlash(filepath.ToSlash(filepath.Clean(resolveAgainst(projectRoot, directory))))
 		if !strings.HasPrefix(abs, resourceDir) {
@@ -262,16 +264,21 @@ func mavenProperties(projectRoot string) (map[string]string, error) {
 	// Pom properties can reference each other, resolve a few levels of nesting
 	for pass := 0; pass < 3; pass++ {
 		for key, value := range properties {
-			properties[key] = mavenTokenRegex.ReplaceAllStringFunc(value, func(token string) string {
-				name := token[2 : len(token)-1]
-				if resolved, ok := properties[name]; ok {
-					return resolved
-				}
-				return token
-			})
+			properties[key] = resolveTokens(value, properties)
 		}
 	}
 	return properties, nil
+}
+
+// resolveTokens substitutes ${...} tokens from props, leaving unknown
+// tokens untouched
+func resolveTokens(s string, props map[string]string) string {
+	return mavenTokenRegex.ReplaceAllStringFunc(s, func(token string) string {
+		if value, ok := props[token[2:len(token)-1]]; ok {
+			return value
+		}
+		return token
+	})
 }
 
 func addProperties(node *XMLNode, into map[string]string) {
@@ -464,50 +471,63 @@ func uniqueStrings(in []string) []string {
 // fn is NOT called — keeping the last good deployed copy beats syncing a file
 // with unresolved ${...} tokens that would break property resolution.
 func withSourceFile(file, projectRoot string, fn func(source string)) {
+	tmp, err := filteredTempFile(file, projectRoot)
+	if err != nil {
+		fmt.Printf("WARNING: Maven resource filtering failed for %s: %v. Skipping sync, keeping the deployed file unchanged.\n", file, err)
+		return
+	}
 	source := file
-	if opts.ResourceFiltering && projectRoot != "" && resourcesFile(file) {
-		filtered, err := filteredResource(file, projectRoot)
-		if err != nil {
-			warnFilteringFailed(file, err)
-			return
-		}
-		if filtered {
-			data, err := os.ReadFile(file)
-			if err != nil {
-				warnFilteringFailed(file, err)
-				return
-			}
-			if utf8.Valid(data) {
-				content, err := filterMavenTokens(string(data), projectRoot)
-				if err != nil {
-					warnFilteringFailed(file, err)
-					return
-				}
-				ext := filepath.Ext(file)
-				base := strings.TrimSuffix(filepath.Base(file), ext)
-				tmp, err := os.CreateTemp("", base+"-*"+ext)
-				if err != nil {
-					warnFilteringFailed(file, err)
-					return
-				}
-				defer os.Remove(tmp.Name())
-				if _, err := tmp.WriteString(content); err != nil {
-					tmp.Close()
-					warnFilteringFailed(file, err)
-					return
-				}
-				if err := tmp.Close(); err != nil {
-					warnFilteringFailed(file, err)
-					return
-				}
-				fmt.Printf("Applied Maven resource filtering to %s\n", filepath.Base(file))
-				source = tmp.Name()
-			}
-		}
+	if tmp != "" {
+		defer os.Remove(tmp)
+		fmt.Printf("Applied Maven resource filtering to %s\n", filepath.Base(file))
+		source = tmp
 	}
 	fn(source)
 }
 
-func warnFilteringFailed(file string, err error) {
-	fmt.Printf("WARNING: Maven resource filtering failed for %s: %v. Skipping sync, keeping the deployed file unchanged.\n", file, err)
+// filteredTempFile writes the Maven-filtered content of file to a temp file
+// and returns its path, or "" when the file is not a filtered resource (or
+// not valid UTF-8, which is synced raw). The temp file carries file's
+// permissions so the deployed copy keeps them.
+func filteredTempFile(file, projectRoot string) (string, error) {
+	if !opts.ResourceFiltering || projectRoot == "" || !resourcesFile(file) {
+		return "", nil
+	}
+	if filtered, err := filteredResource(file, projectRoot); err != nil || !filtered {
+		return "", err
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return "", err
+	}
+	if !utf8.Valid(data) {
+		return "", nil
+	}
+	content, err := filterMavenTokens(string(data), projectRoot)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(file)
+	if err != nil {
+		return "", err
+	}
+	ext := filepath.Ext(file)
+	tmp, err := os.CreateTemp("", strings.TrimSuffix(filepath.Base(file), ext)+"-*"+ext)
+	if err != nil {
+		return "", err
+	}
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	if err := os.Chmod(tmp.Name(), info.Mode().Perm()); err != nil {
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	return tmp.Name(), nil
 }

@@ -16,9 +16,10 @@ Ruby's opt-in behaviors are on by default:
 | `-p` / `--watch-pom` | on by default; `--no-watch-pom` to disable |
 | `-s` / `--follow-symlinks` | on by default; `--no-follow-symlinks` to disable |
 
-The old opt-in flags are still **accepted and ignored**, so existing
-wrapper scripts keep working. Combined short flags (`-vndp`) do **not**
-work — Go's flag parsing requires them separated (`-v -n -d -p`).
+The old opt-in flags are still **accepted and ignored** (with a startup
+warning naming the flag), so existing wrapper scripts keep working.
+Combined short flags (`-vndp`) do **not** work — Go's flag parsing requires
+them separated (`-v -n -d -p`).
 
 ## Flags that are gone
 

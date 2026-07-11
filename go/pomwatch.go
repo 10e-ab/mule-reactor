@@ -166,7 +166,7 @@ func startPomWatcher() error {
 			select {
 			case ev, ok := <-fsw.Events:
 				if !ok {
-					restartPomWatcher(fsw)
+					restartPomWatcher(fsw, deb)
 					return
 				}
 				if ev.Op == fsnotify.Chmod {
@@ -187,7 +187,7 @@ func startPomWatcher() error {
 				deb.add(p)
 			case err, ok := <-fsw.Errors:
 				if !ok {
-					restartPomWatcher(fsw)
+					restartPomWatcher(fsw, deb)
 					return
 				}
 				fmt.Printf("ERROR: pom watcher: %v\n", err)
@@ -199,9 +199,12 @@ func startPomWatcher() error {
 
 // restartPomWatcher rebuilds the pom watcher if its event stream dies, so a
 // backend failure degrades to a re-scan instead of pom changes going
-// silently untracked
-func restartPomWatcher(old *fsnotify.Watcher) {
+// silently untracked. The old debouncer is stopped first so a pending batch
+// cannot fire concurrently with the replacement (e.g. two mvn builds in the
+// same project).
+func restartPomWatcher(old *fsnotify.Watcher, deb *debouncer) {
 	fmt.Println("ERROR: pom watcher stopped, restarting...")
+	deb.stop()
 	old.Close()
 	for {
 		if err := startPomWatcher(); err == nil {
@@ -245,9 +248,14 @@ func processPomChange(filename string, states map[string]pomState, statesMu *syn
 	}
 	statesMu.Lock()
 	oldState, tracked := states[filename]
-	states[filename] = newState
 	statesMu.Unlock()
+	storeState := func() {
+		statesMu.Lock()
+		states[filename] = newState
+		statesMu.Unlock()
+	}
 	if !tracked {
+		storeState()
 		fmt.Printf("Change tracking new pom file: %s\n", filename)
 		return
 	}
@@ -255,6 +263,7 @@ func processPomChange(filename string, states map[string]pomState, statesMu *syn
 		fmt.Printf("Last pom state hash: %s\n", oldState.hash)
 	}
 	if !pomRebuildWorthy(oldState, newState) {
+		storeState()
 		return
 	}
 	fmt.Printf("Change detected in dependencies/properties/profiles/resources of pom file: %s\n", filename)
@@ -262,38 +271,46 @@ func processPomChange(filename string, states map[string]pomState, statesMu *syn
 		fmt.Printf("POM state before:\n%s\nPOM state after:\n%s\n", oldState.content, newState.content)
 	}
 	if opts.WatchPom {
-		// A full rebuild resolves new dependencies and re-applies Maven resource filtering
-		rebuildProject(filename)
+		// A full rebuild resolves new dependencies and re-applies Maven
+		// resource filtering. The baseline only advances on success: a
+		// failed build (e.g. repo unreachable) keeps the old state, so the
+		// next save retries instead of silently considering the app current.
+		if rebuildProject(filename) {
+			storeState()
+		}
 	} else {
+		// Deliberately not advancing the baseline: the app stays stale, so
+		// every further pom save keeps warning until it is rebuilt
 		fmt.Println("WARNING: The pom change requires a rebuild, the deployed app is now stale. Start without --no-watch-pom to rebuild automatically, or rebuild manually.")
 	}
 }
 
 const defaultBuildCommand = "mvn clean package -DskipTests"
 
-// buildCommand returns the command that rebuilds a project, honoring the
-// MULE_REACTOR_BUILD_COMMAND override (run through a shell, so pipes,
-// quoting and wrappers like mvnd work)
-func buildCommand() *exec.Cmd {
+// buildCommand returns the command that rebuilds a project and the string
+// to display for it. A MULE_REACTOR_BUILD_COMMAND override runs through a
+// shell, so pipes, quoting and wrappers like mvnd work; the default is
+// derived from the same string that is displayed, so the log can never
+// claim a command that was not executed.
+func buildCommand() (*exec.Cmd, string) {
 	if custom := os.Getenv("MULE_REACTOR_BUILD_COMMAND"); custom != "" {
 		if runtime.GOOS == "windows" {
-			return exec.Command("cmd", "/C", custom)
+			return exec.Command("cmd", "/C", custom), custom
 		}
-		return exec.Command("sh", "-c", custom)
+		return exec.Command("sh", "-c", custom), custom
 	}
-	return exec.Command("mvn", "clean", "package", "-DskipTests")
+	fields := strings.Fields(defaultBuildCommand)
+	return exec.Command(fields[0], fields[1:]...), defaultBuildCommand
 }
 
-func rebuildProject(pomFile string) {
+// rebuildProject builds the project and deploys the produced jar, returning
+// whether the whole chain succeeded
+func rebuildProject(pomFile string) bool {
 	projectRoot := filepath.Dir(pomFile)
 	projectName := extractProjectNameFromPom(pomFile, false)
 	sendNotification("🛠️", "Rebuilding: "+projectName)
-	command := os.Getenv("MULE_REACTOR_BUILD_COMMAND")
-	if command == "" {
-		command = defaultBuildCommand
-	}
-	fmt.Printf("Running: %s (in %s)\n", command, projectRoot)
-	cmd := buildCommand()
+	cmd, display := buildCommand()
+	fmt.Printf("Running: %s (in %s)\n", display, projectRoot)
 	cmd.Dir = projectRoot
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -304,19 +321,63 @@ func rebuildProject(pomFile string) {
 		}
 		fmt.Printf("Maven build failed with exit status %d\n", exitStatus)
 		sendNotification("🛠️ ❌", "Build: "+projectName+" failed")
-		return
+		return false
 	}
-	jars, _ := filepath.Glob(filepath.Join(projectRoot, "target", projectName+"*.jar"))
-	if len(jars) != 1 {
-		fmt.Printf("Maven build failed: expected exactly one target/%s*.jar, found %d\n", projectName, len(jars))
+	jar, err := selectBuildJar(projectRoot, pomFile, projectName)
+	if err != nil {
+		fmt.Printf("Maven build failed: %v\n", err)
 		sendNotification("🛠️ ❌", "Build: "+projectName+" failed")
-		return
+		return false
 	}
-	if err := copyFile(jars[0], opts.AppsDir+"/"+projectName+".jar"); err != nil {
-		fmt.Printf("ERROR copying %s: %v\n", jars[0], err)
+	if err := copyFile(jar, opts.AppsDir+"/"+projectName+".jar"); err != nil {
+		fmt.Printf("ERROR copying %s: %v\n", jar, err)
 		sendNotification("🛠️ ❌", "Build: "+projectName+" failed")
-		return
+		return false
 	}
 	fmt.Printf("Maven build executed successfully, redeploying app %s\n", projectName)
 	sendNotification("🛠️ ✅", "Build: "+projectName+" succeeded")
+	return true
+}
+
+// selectBuildJar finds the jar the build produced. Jars are named by the
+// artifactId, with the pom <name> as fallback (they often coincide); when
+// several match — e.g. a MULE_REACTOR_BUILD_COMMAND without 'clean' leaves
+// jars of older versions in target/ — the newest one wins.
+func selectBuildJar(projectRoot, pomFile, projectName string) (string, error) {
+	prefixes := []string{projectName}
+	if root, err := pomDocument(pomFile); err == nil && root != nil {
+		artifactID := root.childText("artifactId")
+		if artifactID == "" {
+			artifactID = root.find("parent").childText("artifactId")
+		}
+		if artifactID != "" {
+			prefixes = append([]string{artifactID}, prefixes...)
+		}
+	}
+	seen := map[string]bool{}
+	var jars []string
+	for _, prefix := range uniqueStrings(prefixes) {
+		matches, _ := filepath.Glob(filepath.Join(projectRoot, "target", prefix+"*.jar"))
+		for _, m := range matches {
+			if !seen[m] {
+				seen[m] = true
+				jars = append(jars, m)
+			}
+		}
+	}
+	if len(jars) == 0 {
+		return "", fmt.Errorf("no jar matching target/%s*.jar was produced", strings.Join(uniqueStrings(prefixes), "*.jar or target/"))
+	}
+	newest := jars[0]
+	if len(jars) > 1 {
+		newestTime := time.Time{}
+		for _, jar := range jars {
+			if info, err := os.Stat(jar); err == nil && info.ModTime().After(newestTime) {
+				newestTime = info.ModTime()
+				newest = jar
+			}
+		}
+		fmt.Printf("Multiple jars matched in target/, using the newest: %s\n", filepath.Base(newest))
+	}
+	return newest, nil
 }

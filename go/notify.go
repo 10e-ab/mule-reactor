@@ -57,7 +57,9 @@ func sendNotification(title, message string) {
 // their content is never shell-parsed.
 func runNotifierScript(script, title, message string) {
 	if runtime.GOOS == "windows" {
-		exec.Command("cmd", "/C", script, title, message).Run()
+		// os/exec runs .bat/.cmd scripts itself with correct quoting; a
+		// cmd /C wrapper would mis-handle script paths containing spaces
+		exec.Command(script, title, message).Run()
 		return
 	}
 	exec.Command("sh", "-c", `"$0" "$1" "$2"`, script, title, message).Run()
