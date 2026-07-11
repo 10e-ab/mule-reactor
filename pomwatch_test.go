@@ -131,10 +131,26 @@ func TestInitializePomState(t *testing.T) {
 }
 
 func TestBuildCommand(t *testing.T) {
+	// control PATH so the mvnd detection is deterministic
+	bin := t.TempDir()
+	t.Setenv("PATH", bin)
+
 	cmd, display := buildCommand()
 	if cmd.Args[0] != "mvn" || len(cmd.Args) != 4 || display != defaultBuildCommand {
 		t.Errorf("default build command = %v, displayed as %q", cmd.Args, display)
 	}
+
+	// with mvnd on PATH the daemon is preferred
+	writeFile(t, bin+"/mvnd", "#!/bin/sh\n")
+	if err := os.Chmod(bin+"/mvnd", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd, display = buildCommand()
+	if cmd.Args[0] != "mvnd" || display != "mvnd clean package -DskipTests" {
+		t.Errorf("mvnd on PATH should be preferred: %v, displayed as %q", cmd.Args, display)
+	}
+
+	// an explicit build command always wins
 	t.Setenv("MULE_REACTOR_BUILD_COMMAND", "echo custom && true")
 	cmd, display = buildCommand()
 	if cmd.Args[0] != "sh" || cmd.Args[1] != "-c" || cmd.Args[2] != "echo custom && true" || display != "echo custom && true" {

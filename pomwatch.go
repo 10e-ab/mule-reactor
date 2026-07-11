@@ -288,10 +288,12 @@ func processPomChange(filename string, states map[string]pomState, statesMu *syn
 const defaultBuildCommand = "mvn clean package -DskipTests"
 
 // buildCommand returns the command that rebuilds a project and the string
-// to display for it. A MULE_REACTOR_BUILD_COMMAND override runs through a
-// shell, so pipes, quoting and wrappers like mvnd work; the default is
-// derived from the same string that is displayed, so the log can never
-// claim a command that was not executed.
+// to display for it, resolved like the notifier: an explicit
+// MULE_REACTOR_BUILD_COMMAND wins (run through a shell, so pipes, quoting
+// and wrappers work), then mvnd when it is on PATH (installing the Maven
+// daemon is a deliberate choice, and it is a drop-in for mvn), then mvn.
+// The command is derived from the same string that is displayed, so the log
+// can never claim a command that was not executed.
 func buildCommand() (*exec.Cmd, string) {
 	if custom := os.Getenv("MULE_REACTOR_BUILD_COMMAND"); custom != "" {
 		if runtime.GOOS == "windows" {
@@ -299,8 +301,12 @@ func buildCommand() (*exec.Cmd, string) {
 		}
 		return exec.Command("sh", "-c", custom), custom
 	}
-	fields := strings.Fields(defaultBuildCommand)
-	return exec.Command(fields[0], fields[1:]...), defaultBuildCommand
+	display := defaultBuildCommand
+	if _, err := exec.LookPath("mvnd"); err == nil {
+		display = "mvnd" + strings.TrimPrefix(defaultBuildCommand, "mvn")
+	}
+	fields := strings.Fields(display)
+	return exec.Command(fields[0], fields[1:]...), display
 }
 
 // rebuildProject builds the project and deploys the produced jar, returning
