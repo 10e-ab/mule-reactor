@@ -28,7 +28,11 @@ process.
 
 ## Installation
 
-With Go ≥ 1.21 installed:
+Download a prebuilt binary for macOS, Linux or Windows from the
+[releases page](https://github.com/10e-ab/mule-reactor/releases) and put
+it on your PATH.
+
+Or, with Go ≥ 1.21 installed:
 
 ```
 go install github.com/10e-ab/mule-reactor@latest

@@ -27,6 +27,9 @@ type Options struct {
 
 var opts Options
 
+// version is injected at release build time via -ldflags "-X main.version=..."
+var version = "dev"
+
 func main() {
 	wd, err := os.Getwd()
 	if err != nil {
@@ -45,7 +48,13 @@ func main() {
 	flag.BoolVar(&opts.IgnoreBlankLines, "ignore-blank-lines", false, "Ignore added or removed blank lines when comparing, in all file types (like diff -B)")
 	flag.StringVar(&opts.ProjectsDir, "projects-dir", wd, "Directory of projects (default: current directory)")
 	flag.StringVar(&opts.AppsDir, "apps-dir", os.Getenv("MULE_HOME")+"/apps", "Directory to where the apps should be deployed (default: $MULE_HOME/apps)")
+	showVersion := flag.Bool("version", false, "Print the version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 
 	opts.Notification = !*noNotification
 	opts.WatchDeployments = !*noWatchDeployments && opts.Notification
