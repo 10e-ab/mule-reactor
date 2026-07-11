@@ -1,198 +1,154 @@
 # MuleReactor
 
-MuleReactor is a tool designed to replace and improve the Anypoint Studio "Build Automatically" feature, enabling faster hot deployment of Mule applications in Anypoint Studio. But it also works fine for other IDEs/Editors with a standalone Mule runtime. Or even better, combining Anypoint Studio with an editor like VIM or Emacs.
-It listens for file changes in your Mule projects and automatically deploys the changes, streamlining the development and testing process.
+MuleReactor is a tool designed to replace and improve the Anypoint Studio
+"Build Automatically" feature, enabling faster hot deployment of Mule
+applications. It also works fine for other IDEs/editors with a standalone
+Mule runtime — or even better, combining Anypoint Studio with an editor like
+VIM or Emacs. It listens for file changes in your Mule projects and
+automatically deploys the changes, streamlining the development and testing
+process.
 
 ## Features
 
-- **Real-time Deployment**: Quickly deploys changes to Mule applications as soon as files are modified.
-- **Comprehensive File Support**: Supports changing property files, `log4j2.xml`, and other resources, ensuring that all aspects of your Mule application can be dynamically updated.
-- **Maven Resource Filtering**: Resource files that the pom marks as filtered (`<resource><filtering>true</filtering>`) get their `${...}` tokens substituted on sync — using the pom properties, project coordinates, live git info and a build timestamp — mirroring what `mvn process-resources` produces. See [Maven Resource Filtering](#maven-resource-filtering).
-- **Flexible Configuration Management**: Supports adding new, renaming, and removing Mule XML configuration files, allowing for on-the-fly reconfiguration of your Mule applications.
-- **Versatile Deployment Support**: Works with both Anypoint Studio and standalone Mule runtimes.
-- **Editor Agnostic**: Compatible with all editors, enhancing workflow flexibility for Mule application development across diverse development setups.
-
-
-## Prerequisites
-
-- Ruby 3.x (Ruby 4 is not supported)
-- [Listen](https://github.com/guard/listen) gem
-- [Filewatcher](https://github.com/filewatcher/filewatcher) gem
-- Mule runtime or Anypoint Studio setup
+- **Real-time deployment**: syncs changes into the deployed app as soon as
+  files are modified, triggering Mule's hot redeploy.
+- **Zero configuration**: notifications, deployment status watching,
+  pom-triggered rebuilds and symlink following all work out of the box.
+- **Comprehensive file support**: property files, `log4j2.xml` and other
+  resources are handled, and Mule XML configuration files can be added,
+  renamed and removed on the fly.
+- **Maven resource filtering**: files the pom marks as filtered
+  (`<resource><filtering>true</filtering>`) get their `${...}` tokens
+  substituted on sync, mirroring `mvn process-resources`. See
+  [Maven Resource Filtering](#maven-resource-filtering).
+- **Noise suppression**: XML/JSON saves that only change formatting don't
+  trigger a redeploy.
+- **Editor agnostic, single binary**: one self-contained executable, no
+  runtime dependencies.
 
 ## Installation
 
-1. Ensure Ruby 3.x is [installed](https://www.ruby-lang.org/en/documentation/installation) on your system (Ruby 4 is not supported).
-2. Install the required gems:
-```
-gem install listen
-gem install filewatcher
-gem install diffy
-gem install open3
-```
-3. Add mule-reactor to you PATH
-4. Make sure that Build Automatically is disabled in Anypoint Studio (Project/Build Automatically)
+With Go ≥ 1.21 installed:
 
+```
+go install github.com/10e-ab/mule-reactor@latest
+```
+
+or build from a checkout and put the binary on your PATH:
+
+```
+go build -o mule-reactor .
+```
+
+Run the tests with `go test ./...`.
+
+Then make sure *Build Automatically* is disabled in Anypoint Studio
+(Project → Build Automatically).
 
 ## Usage
 
-MuleReactor simplifies the process of deploying changes to Mule applications by monitoring file changes in real-time. You can use it for individual Mule projects or a directory containing multiple Mule projects.
+Open a terminal in your project's root directory (or a directory containing
+several Mule projects) and run:
 
-### Basic Usage
-
-
-- **Start mule-reactor**: Open a terminal in your project's root directory (or specify the projects directory using --projects-dir) and run the mule-reactor script.
-
-```bash
+```
 mule-reactor
 ```
-- **Deploy Your Application**:
-  - Anypoint Studio: Run your Mule application as you normally would from within the studio.
-  - Standalone Mule Runtime: Deploy your application to the Mule runtime by copying your app's .jar file to the apps directory or use any deployment method provided by the runtime.
 
-With mule-reactor running, any changes you make to your Mule project files will be automatically synced to the deployed application, prompting hot deployment. 
-This enables you to see your changes reflected in the running application almost instantly
+Then deploy your application once, normally — run it from Anypoint Studio,
+or copy the app jar into the runtime's `apps` directory. From that point,
+changes you save are synced into the deployed application and hot deployed
+almost instantly.
 
-### Specifying Mule Apps Deployment Directory
-When MULE_HOME is not set, or you wish to deploy to a different directory, use the --apps-dir option:
+### Directories
 
-```
-mule-reactor --apps-dir /Applications/AnypointStudio.app/Contents/Eclipse/plugins/org.mule.tooling.server.4.4.0.ee_7.11.0.202401311900/mule/apps
-```
-
-
-### Specifying a Custom Projects Directory
-If you want to monitor a specific project or a directory containing multiple projects, use the --projects-dir option:
-```
-mule-reactor --projects-dir ~/projects/mule
-```
-
-### Enabling Notifications
-To receive notifications for important events such as deployments, enable notifications using the -n or --notification option:
+- `--projects-dir <dir>` — where to look for Mule projects (default: the
+  current directory; projects one level down are found too)
+- `--apps-dir <dir>` — the deployed apps directory (default:
+  `$MULE_HOME/apps`)
 
 ```
-mule-reactor --notification
-```
-See below for how to setup Notifications
-
-### Monitoring Deployment Status
-If you want to monitor the deployment status by tailing the server log and receive notifications on the deployment status, use the -d or --watch-deployments option. Note that notifications must be enabled for this feature to work, and it might not work on Windows due to the use of tail command:
-
-```
-mule-reactor --notification --watch-deployments
+mule-reactor --apps-dir /Applications/AnypointStudio.app/Contents/Eclipse/plugins/org.mule.tooling.server.4.9.ee_.../mule/apps
 ```
 
-### Watching pom.xml for Changes
-To automatically detect changes in pom.xml files and trigger a rebuild when dependencies(or other relavant content) has changed, use the -p or --watch-pom option. This is useful for developers looking to automate the process of rebuilding projects upon changes to their Maven configuration:
-```
-mule-reactor --watch-pom
-```
+### Default behavior and opting out
 
-### Following Symbolic Links
-By default, MuleReactor uses the Listen gem which has limited support for symbolic links. If your project uses symlinks that point to external directories (outside the watched project tree), you can enable full symlink support with the -s or --follow-symlinks option:
+Everything is on by default. Opt out with:
 
-```
-mule-reactor --follow-symlinks
-```
+- `--no-notification` — no desktop notifications (implies
+  `--no-watch-deployments`)
+- `--no-watch-deployments` — don't tail the server log for deployment
+  success/failure notifications
+- `--no-watch-pom` — don't rebuild when a pom changes in a rebuild-worthy
+  way; print a stale-app warning instead
+- `--no-follow-symlinks` — don't follow symlinks pointing outside the
+  project source trees
+- `--no-resource-filtering` — sync filtered resource files as-is, without
+  `${...}` substitution
+- `--no-ignore-formatting` — treat XML/JSON formatting-only changes as
+  significant
+- `-v` / `--verbose` — verbose output
 
-When symlink support is enabled, MuleReactor uses a smart hybrid approach:
-- **Listen** (fast filesystem events) continues to watch regular directories and files
-- **Filewatcher** (polling-based) watches only the specific symlinked paths that point to external locations
+### Rebuilds
 
-This ensures optimal performance while supporting external symlinks where needed. Use verbose mode to see which paths are being watched by each system:
+A rebuild-worthy pom change (dependencies, parent — plus properties,
+profiles and resources when resource filtering is on) runs
+`mvn clean package -DskipTests` in the project root and copies the jar to
+the apps dir. Whitespace-only pom edits are ignored. If several jars match
+in `target/` (e.g. a build command without `clean`), the newest one is
+deployed; a failed build keeps the previous pom baseline, so the next save
+retries the rebuild.
 
-```
-mule-reactor --follow-symlinks --verbose
-```
-
-**Common Use Case:** This option is particularly useful when you have API specifications (RAML/OAS files) that are maintained in separate repositories and linked into your Mule projects via symbolic links. For example, if your `src/main/resources/api` directory is a symlink to an externally version-controlled API specification repository, enabling this option will ensure changes to the API specs are detected and hot-deployed.
-
-### Full Example with Verbose Output
-To start the script with verbose output, monitoring a specific directory for projects, and specifying a custom deployment directory:
-
-```
-mule-reactor --verbose --projects-dir /path/to/your/projects --apps-dir /path/to/mule/runtime/apps --notification --watch-deployments --watch-pom
-```
-
-Using the short format
-```
-mule-reactor -vndp --projects-dir /path/to/your/projects --apps-dir /path/to/mule/runtime/apps
-```
-
-
-
-### Understanding Default Behavior
-- **Projects Directory:** By default, MuleReactor monitors the current directory (.) for Mule projects. This can be the root of a single project or a directory containing multiple Mule projects.
-- **Mule Apps Deployment Directory:** MuleReactor deploys applications to the Mule runtime's apps directory, which is defined by the MULE_HOME environment variable. If MULE_HOME is set, the default deployment directory is $MULE_HOME/apps. If you need to deploy to a different location, use the --apps-dir option.
-
-
-### Setting Up Notifications
-For the notification feature of mule-reactor to function, a script named mule-reactor-notification must be added to your system's PATH. This script will be called by mule-reactor to send notifications.
-
-Look for example notifier scripts in the notifiers folder of the mule-reactor project directory.
-
-##### Mac OS Specifics
-
-A script for macOS is provided with mule-reactor. It utilizes terminal-notifier, a command-line tool to send macOS User Notifications.
-***Note:*** terminal-notifier can be installed via Homebrew with the command brew install terminal-notifier.
-
-##### Linux Gnome Shell based desktop
-
-A script for GNOME Shell based desktop is provided with mule-reactor. It utilizes `gdbus`, a command-line tool that should be included by default.  
-***Note:*** `gdbus` is used instead of notify-send to be able to close the notification. The reason for this is that notify-osd (used in Ubuntu and GNOME Shell) ignores the expiry timer.
-
-##### Adding Notification Scripts for Other Platforms:
-
-While the provided script caters to macOS users, you can easily create and add your own notification script for other operating systems.
-
-How to Create a Notification Script:
-* The script should be named mule-reactor-notification.
-* Your script needs to accept two command-line arguments:
-First Argument (Title): The title of the notification.
-Second Argument (Message): The message body of the notification.
-Example for macOS using terminal-notifier:
-
-
-Adding to PATH:
-
-Ensure your mule-reactor-notification script is placed in a directory that's part of your system's PATH. This allows mule-reactor to find and execute the script from anywhere.
-
-Testing Your Notification Script:
-
-To test your script, run the following in your terminal, replacing title and message with test values:
+Set `MULE_REACTOR_BUILD_COMMAND` to override the build command; it runs
+through a shell in the project root, so wrappers, extra flags and pipes
+work:
 
 ```
-mule-reactor-notification "<title>" "<message>"
+MULE_REACTOR_BUILD_COMMAND="mvnd clean package -DskipTests -Pdev" mule-reactor
 ```
-If everything is set up correctly, you should see a system notification with your specified title and message. If not, verify that terminal-notifier is correctly installed and that your script is executable and located in a directory included in your PATH.
 
+### Notifications
 
-### Optional Configuration
+Desktop notifications work out of the box on macOS, Linux and Windows (via
+[beeep](https://github.com/gen2brain/beeep)).
 
-To further enhance and simplyfy your development experience with MuleReactor, consider applying the following optional configurations:
+To customize delivery — sounds, icons, Slack webhooks, whatever — point
+`MULE_REACTOR_NOTIFIER` at a script. It is run through a shell with two
+arguments: the title and the message. Example scripts are in `notifiers/`:
+the macOS one uses [terminal-notifier](https://github.com/julienXX/terminal-notifier)
+(`brew install terminal-notifier`), the GNOME one uses `gdbus`. Test a
+script by hand:
 
-1. **Set `MULE_HOME` Environment Variable**: Setting this environment variable eliminates the need to specify the path to the Mule installation each time you start the script. This can be done by adding the following to your `.bashrc`, `.bash_profile`, or equivalent file on your operating system:
-   ```bash
-   export MULE_HOME=/Applications/AnypointStudio.app/Contents/Eclipse/plugins/org.mule.tooling.server.4.4.0.ee_7.11.0.202401311900/mule
-   ```
-
-Replace /Applications/AnypointStudio.app/Contents/Eclipse/plugins/org.mule.tooling.server.4.4.0.ee_7.11.0.202401311900/mule with the actual path to your Mule runtime installation. 
-
-2. **Update log4j2.xml for Instant Logging Configuration**: By adding a monitorInterval attribute to your log4j2.xml configuration, you can make changes to logging levels and formats without needing to redeploy your application. Add the following within the <Configuration> tag:
-xml
 ```
-<Configuration monitorInterval="10">
+your-notifier "<title>" "<message>"
 ```
-This setting tells Mule to check for changes in the log4j2.xml file every 10 seconds.
 
-3. **Configure Mule to Detect Hot Deploys Faster:** Speed up the interval at which Mule checks for changes and hot deploys applications by adding the
-   ``` -Dmule.launcher.changeCheckInterval=500 ```
-   argument to your Run Configuration. This sets the check interval to 500 milliseconds. If you're using Anypoint Studio, you can add this under Run > Run Configurations..., selecting your application's configuration, and then adding it to the VM Arguments section.
-Applying these optional configurations will streamline your development process, making it more efficient and responsive to changes.
+The active notifier is announced at startup.
 
-This section offers users guidance on optimizing their environment for use with MuleReactor, improving both the usability of the tool and the overall developer experience.
+### Symbolic links
 
-### Maven Resource Filtering
+Symlinks pointing outside the project trees are followed by default: their
+targets are watched natively, and changes behind them sync as if they lived
+at the symlink's location. This is particularly useful when API
+specifications (RAML/OAS) are maintained in separate repositories and
+linked into projects — e.g. `src/main/resources/api` being a symlink to an
+API-spec checkout. Project directories that are themselves symlinks work
+too. Disable with `--no-follow-symlinks`.
+
+### What counts as a significant change
+
+A save only triggers a sync (and redeploy) when it changes something real:
+
+- **XML and JSON** files are canonicalized before comparison, so
+  formatting-only changes — indentation, line breaks — don't redeploy.
+  Disable with `--no-ignore-formatting`.
+- **Every other file type** is compared exactly. Whitespace can be
+  semantically meaningful in `.properties` values or DataWeave, so it is
+  never ignored.
+- Files over 1 MB are synced without comparison.
+- A `log4j2.xml` with `monitorInterval` set is synced without forcing a
+  redeploy — Mule reloads it on its own.
+
+## Maven Resource Filtering
 
 If a project's `pom.xml` declares filtered resources, for example:
 
@@ -208,35 +164,110 @@ If a project's `pom.xml` declares filtered resources, for example:
 </resources>
 ```
 
-then Maven replaces `${...}` tokens in those files at build time — and syncing the raw source file would hand the runtime unresolved tokens (breaking, for instance, an `api.raml=resource::...:${raml.version}:...` reference). MuleReactor detects files covered by a `filtering=true` resource (honoring `includes`/`excludes`) and substitutes their tokens before syncing:
+then Maven replaces `${...}` tokens in those files at build time — and
+syncing the raw source file would hand the runtime unresolved tokens
+(breaking, for instance, an `api.raml=resource::...:${raml.version}:...`
+reference). MuleReactor detects files covered by a `filtering=true`
+resource (honoring `includes`/`excludes`) and substitutes their tokens
+before syncing:
 
-- `pom.xml` `<properties>` values (with nested `${...}` references resolved), including properties from profiles that are active by default or activated by a file `exists`/`missing` condition — profiles requiring `-P` flags, settings.xml, JDK, OS or property activation are not evaluated
-- `project.groupId`, `project.artifactId`, `project.version`, `project.name`, `project.basedir` (falling back to the `<parent>` values when inherited)
-- `maven.build.timestamp`, honoring `maven.build.timestamp.format` — substituted with a fixed epoch sentinel (`1970-01-01T00:00:00Z`) rather than the current time. MuleReactor didn't build anything, so a real timestamp would be a lie — and the sentinel keeps filtered output deterministic, so unchanged files diff as identical and don't trigger needless redeploys
-- Live git values matching what `git-commit-id-maven-plugin` would inject: `git.commit.id`, `git.commit.id.abbrev`, `git.branch`, `git.dirty`
-- `user.name` (the JVM system property Maven interpolates), resolved from `$USER`/`$USERNAME`
+- `pom.xml` `<properties>` values (with nested `${...}` references
+  resolved), including properties from profiles that are active by default
+  or activated by a file `exists`/`missing` condition — profiles requiring
+  `-P` flags, settings.xml, JDK, OS or property activation are not
+  evaluated
+- `project.groupId`, `project.artifactId`, `project.version`,
+  `project.name`, `project.basedir` (falling back to the `<parent>` values
+  when inherited)
+- `maven.build.timestamp`, honoring `maven.build.timestamp.format` —
+  substituted with a fixed epoch sentinel (`1970-01-01T00:00:00Z`) rather
+  than the current time. MuleReactor didn't build anything, so a real
+  timestamp would be a lie — and the sentinel keeps filtered output
+  deterministic, so unchanged files diff as identical and don't trigger
+  needless redeploys
+- Live git values matching what `git-commit-id-maven-plugin` would inject:
+  `git.commit.id`, `git.commit.id.abbrev`, `git.branch`, `git.dirty`
+- `user.name` (the JVM system property Maven interpolates), resolved from
+  `$USER`/`$USERNAME`
 
-Unknown tokens are left untouched (as Maven does) with a warning. Files not covered by a filtered resource — including binaries like keystores — are synced byte-for-byte as before. Note that properties inherited from a parent pom's `<properties>` section are not resolved (only the parent's coordinates are), since the parent pom is typically not available on disk.
+Unknown tokens are left untouched (as Maven does) with a warning. Files not
+covered by a filtered resource — including binaries like keystores — are
+synced byte-for-byte. If filtering fails (e.g. the pom is mid-edit), the
+file is not synced and the last good deployed copy is kept. Note that
+properties inherited from a parent pom's `<properties>` section are not
+resolved (only the parent's coordinates are), since the parent pom is
+typically not available on disk.
 
-Changes to the pom itself are also detected: MuleReactor watches the `pom.xml` files, and any change to the `<dependencies>`, `<parent>`, `<properties>`, `<profiles>` or `<build><resources>` sections triggers a full `mvn` rebuild when running with `-p`/`--watch-pom` — a rebuild is the one response that is always correct, since a property can feed dependency versions and filtered resources alike, and only Maven can package new artifacts into the app. Without `-p`, MuleReactor prints a warning that the deployed app is stale instead of touching it. Whitespace-only pom edits are ignored.
+Changes to the pom itself are detected too: any change to the
+`<dependencies>`, `<parent>`, `<properties>`, `<profiles>` or
+`<build><resources>` sections triggers a full rebuild — a rebuild is the
+one response that is always correct, since a property can feed dependency
+versions and filtered resources alike, and only Maven can package new
+artifacts into the app. With `--no-watch-pom` a stale-app warning is
+printed instead.
 
-To turn the feature off entirely, start with `--no-resource-filtering` — filtered resource files are then synced as-is, tokens included, matching the old behavior. The pom watcher then also stops reacting to property/profile/resources changes (they can't reach the deployed app without filtering); only dependency changes trigger a rebuild, as before. Note this reopens the blind spot where a dependency version fed by a property (`<version>${some.version}</version>`) changes without triggering a rebuild.
+With `--no-resource-filtering`, filtered resource files are synced as-is,
+tokens included, and the pom watcher stops reacting to
+property/profile/resources changes (they can't reach the deployed app
+without filtering); only dependency changes trigger a rebuild. Note this
+reopens the blind spot where a dependency version fed by a property
+(`<version>${some.version}</version>`) changes without triggering a
+rebuild.
+
+## Optional Configuration
+
+1. **Set `MULE_HOME`** so you don't have to pass `--apps-dir` every time:
+
+   ```bash
+   export MULE_HOME=/Applications/AnypointStudio.app/Contents/Eclipse/plugins/org.mule.tooling.server.4.9.ee_.../mule
+   ```
+
+2. **Update `log4j2.xml` for instant logging configuration**: adding a
+   `monitorInterval` attribute lets you change logging levels and formats
+   without a redeploy:
+
+   ```xml
+   <Configuration monitorInterval="10">
+   ```
+
+3. **Configure Mule to detect hot deploys faster** by adding
+   `-Dmule.launcher.changeCheckInterval=500` to your Run Configuration's VM
+   arguments (in Anypoint Studio: Run → Run Configurations… → VM Arguments).
 
 ## Limitations
 
-While MuleReactor aims to streamline the development process by enabling automatic hot deployment of Mule applications, there are certain scenarios and limitations you should be aware of:
+- **Pre-processed resources**: Maven resource filtering is supported — see
+  above. Other kinds of build-time resource generation or modification are
+  not: the tool syncs the files as they are in your project directory, so
+  resources produced by other plugins will not be reflected in the hot
+  deployed application.
 
-- **Pre-Processed Resources**: Maven resource filtering (`${...}` token substitution) is supported — see [Maven Resource Filtering](#maven-resource-filtering). Other kinds of build-time resource generation or modification are not: the tool syncs the files as they are in your project directory, so resources produced by other plugins will not be reflected in the hot deployed application.
+- **Hot deploy reliability**: hot deployment, by its nature, can sometimes
+  fail or lead to unexpected behaviors due to the complexities of
+  application state and runtime management. If you encounter odd behavior,
+  perform a normal (cold) deployment of your application and let
+  MuleReactor handle subsequent hot deployments from that known good state.
 
-- **Hot Deploy Reliability**: MuleReactor significantly improves the developer experience by reducing the time between making a change and seeing it reflected in the running application. However, it's not a silver bullet. Hot deployment, by its nature, can sometimes fail or lead to unexpected behaviors due to the complexities of application state and runtime management. This script might also introduce unknown behaviors that are difficult to predict due to the vast variety of Mule applications and configurations.
+- **macOS file descriptors**: the file watcher uses kqueue, which costs one
+  file descriptor per watched file/directory. Fine for normal project
+  sizes; an enormous resources tree could approach fd limits.
 
-- **Troubleshooting Strange Behaviors**: If you encounter odd or unexpected behavior with your application while using MuleReactor, the recommended approach is to perform a normal (cold) deployment of your application and then let MuleReactor handle subsequent hot deployments. This ensures that your application is in a known good state before MuleReactor takes over the synchronization of file changes for hot deployment.
+## Previous Ruby version
 
+MuleReactor was originally a Ruby script; this Go implementation replaced
+it. The Ruby version is preserved on the
+[`ruby` branch](https://github.com/10e-ab/mule-reactor/tree/ruby) (tagged
+`ruby-final`) and only receives critical fixes. Behavior is largely
+identical with friendlier defaults, and Ruby-era flags are accepted with a
+deprecation warning, so old wrapper scripts keep working — see
+[MIGRATING-FROM-RUBY.md](MIGRATING-FROM-RUBY.md) for the differences.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit pull requests or open issues to suggest improvements or add new features.
+Contributions are welcome! Please feel free to submit pull requests or open
+issues to suggest improvements or add new features.
 
 ## License
 
-MuleReactor is released under the MIT License. See the LICENSE file for more details.
+MuleReactor is released under the MIT License. See the LICENSE file for
+more details.

@@ -1,4 +1,4 @@
-module mule-reactor
+module github.com/10e-ab/mule-reactor
 
 go 1.21.5
 
