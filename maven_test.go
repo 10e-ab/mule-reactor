@@ -298,6 +298,49 @@ func TestDynamicMavenPropertyGit(t *testing.T) {
 	}
 }
 
+func TestDynamicMavenPropertyGitPushed(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	git := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	origin := t.TempDir()
+	git(origin, "init", "-q", "--bare")
+
+	dir := t.TempDir()
+	git(dir, "init", "-q")
+	git(dir, "config", "user.email", "t@example.com")
+	git(dir, "config", "user.name", "Tester")
+	git(dir, "commit", "-q", "--allow-empty", "-m", "init")
+
+	pushed, ok := dynamicMavenProperty("git.pushed", dir, nil)
+	if !ok || pushed != "false" {
+		t.Errorf("git.pushed with no remote = (%q, %v), want false", pushed, ok)
+	}
+
+	git(dir, "remote", "add", "origin", origin)
+	git(dir, "push", "-q", "origin", "HEAD:refs/heads/main")
+	git(dir, "fetch", "-q", "origin")
+
+	// On origin even though this branch has no upstream, which is exactly the
+	// case a branch ahead-count reports wrongly
+	pushed, ok = dynamicMavenProperty("git.pushed", dir, nil)
+	if !ok || pushed != "true" {
+		t.Errorf("git.pushed after push = (%q, %v), want true", pushed, ok)
+	}
+
+	git(dir, "commit", "-q", "--allow-empty", "-m", "local only")
+	pushed, ok = dynamicMavenProperty("git.pushed", dir, nil)
+	if !ok || pushed != "false" {
+		t.Errorf("git.pushed with unpushed commit = (%q, %v), want false", pushed, ok)
+	}
+}
+
 func TestWithSourceFileFiltersAndCleansUp(t *testing.T) {
 	setOpts(t, defaultTestOpts())
 	dir := t.TempDir()

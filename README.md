@@ -208,17 +208,36 @@ before syncing:
   deterministic, so unchanged files diff as identical and don't trigger
   needless redeploys
 - Live git values matching what `git-commit-id-maven-plugin` would inject:
-  `git.commit.id`, `git.commit.id.abbrev`, `git.branch`, `git.dirty`
+  `git.commit.id`, `git.commit.id.abbrev`, `git.branch`, `git.dirty`,
+  `git.pushed` (whether the commit is on origin, via
+  `git branch -r --contains HEAD`)
 - `user.name` (the JVM system property Maven interpolates), resolved from
   `$USER`/`$USERNAME`
 
 Unknown tokens are left untouched (as Maven does) with a warning. Files not
 covered by a filtered resource — including binaries like keystores — are
 synced byte-for-byte. If filtering fails (e.g. the pom is mid-edit), the
-file is not synced and the last good deployed copy is kept. Note that
-properties inherited from a parent pom's `<properties>` section are not
-resolved (only the parent's coordinates are), since the parent pom is
-typically not available on disk.
+file is not synced and the last good deployed copy is kept.
+
+### The parent pom is not read
+
+Only the project's own `pom.xml` is parsed, since the parent is typically
+not on disk. Two consequences, the first much easier to miss than the
+second:
+
+- **`<build><resources>` must be declared in the project's own pom.** An
+  inherited resources block is invisible here, so no file looks filtered
+  and every one of them syncs raw, tokens and all. Nothing errors — the
+  runtime just receives `${project.version}` as a literal. Maven itself
+  gives the same advice for a different reason: `mule-maven-plugin` injects
+  its own unfiltered `src/main/resources/**/*` resource whenever the project
+  declares no resources of its own, and that copy lands last and overwrites
+  a parent-driven filtered one.
+- **Properties inherited from a parent's `<properties>` are not resolved**,
+  only the parent's coordinates. A token that resolves during a Maven build
+  is then left as-is here and reported in the unresolved warning. Values the
+  build computes rather than declares — `git.*`, `maven.build.timestamp`,
+  `user.name` — are unaffected, as they're derived live from the list above.
 
 Changes to the pom itself are detected too: any change to the
 `<dependencies>`, `<parent>`, `<properties>`, `<profiles>` or
@@ -263,6 +282,11 @@ rebuild.
   not: the tool syncs the files as they are in your project directory, so
   resources produced by other plugins will not be reflected in the hot
   deployed application.
+
+- **Parent poms**: only the project's own `pom.xml` is read. A
+  `<build><resources>` block or `<properties>` moved up into a parent stops
+  being visible, and filtering silently degrades rather than failing — see
+  [The parent pom is not read](#the-parent-pom-is-not-read).
 
 - **Hot deploy reliability**: hot deployment, by its nature, can sometimes
   fail or lead to unexpected behaviors due to the complexities of

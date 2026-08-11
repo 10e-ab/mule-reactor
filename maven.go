@@ -323,6 +323,15 @@ func dynamicMavenProperty(key, projectRoot string, properties map[string]string)
 			return "", false
 		}
 		return strconv.FormatBool(changes != ""), true
+	case "git.pushed":
+		// Whether the built commit exists on origin. Deliberately not the branch's
+		// ahead count: a branch with no upstream is ahead of nothing, yet its
+		// commit may well be on origin already
+		remotes, ok := gitOutput(projectRoot, "branch", "-r", "--contains", "HEAD")
+		if !ok {
+			return "", false
+		}
+		return strconv.FormatBool(remotes != ""), true
 	case "user.name":
 		// Maven resolves ${user.name} from the JVM system property
 		if v := os.Getenv("USER"); v != "" {
