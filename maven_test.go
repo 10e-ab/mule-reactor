@@ -341,6 +341,42 @@ func TestDynamicMavenPropertyGitPushed(t *testing.T) {
 	}
 }
 
+func TestFilteredResourcesToRecheck(t *testing.T) {
+	setOpts(t, defaultTestOpts())
+	dir := t.TempDir()
+	writeFile(t, dir+"/pom.xml", twoEntryPom)
+	props := dir + "/src/main/resources/app.properties"
+	writeFile(t, props, "sha=${git.commit.id}\n")
+	writeFile(t, dir+"/src/main/resources/plain.txt", "not filtered\n")
+	writeFile(t, dir+"/src/main/resources/secret/hidden.properties", "excluded\n")
+	writeFile(t, dir+"/src/main/mule/api.xml", "<mule/>\n")
+
+	// An edit anywhere in the project must pull in its filtered resources, because
+	// their git-derived tokens can have gone stale without a file event of their own
+	got := filteredResourcesToRecheck(map[string]bool{dir + "/src/main/mule/api.xml": true})
+	if len(got) != 1 || got[0] != props {
+		t.Errorf("got %v, want [%s]", got, props)
+	}
+
+	// Files the batch already synced are not synced twice
+	got = filteredResourcesToRecheck(map[string]bool{props: true})
+	if len(got) != 0 {
+		t.Errorf("already-handled file should not be rechecked, got %v", got)
+	}
+
+	// A batch touching nothing in a project must not drag that project in
+	if got = filteredResourcesToRecheck(map[string]bool{}); len(got) != 0 {
+		t.Errorf("empty batch should recheck nothing, got %v", got)
+	}
+
+	off := defaultTestOpts()
+	off.ResourceFiltering = false
+	setOpts(t, off)
+	if got = filteredResourcesToRecheck(map[string]bool{dir + "/src/main/mule/api.xml": true}); got != nil {
+		t.Errorf("--no-resource-filtering should recheck nothing, got %v", got)
+	}
+}
+
 func TestWithSourceFileFiltersAndCleansUp(t *testing.T) {
 	setOpts(t, defaultTestOpts())
 	dir := t.TempDir()

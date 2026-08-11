@@ -324,6 +324,7 @@ func (w *sourceWatcher) processBatch(paths []string) {
 	if opts.Verbose {
 		fmt.Println("Changes detected")
 	}
+	handled := map[string]bool{}
 	for _, realPath := range paths {
 		w.mu.Lock()
 		logical, viaSymlink := w.toLogical(realPath)
@@ -351,9 +352,13 @@ func (w *sourceWatcher) processBatch(paths []string) {
 		case info.IsDir():
 			w.handleDir(realPath, logical)
 		default:
+			handled[logical] = true
 			w.handleFile(realPath, logical)
 		}
 	}
+	// Filtered resources can go stale without an event of their own, because their
+	// git-derived tokens follow the repository rather than the file.
+	resyncFilteredResources(handled)
 }
 
 // topmostGone climbs from a nonexistent path to the highest ancestor that is

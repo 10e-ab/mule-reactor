@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -492,6 +493,62 @@ func withSourceFile(file, projectRoot string, fn func(source string)) {
 		source = tmp
 	}
 	fn(source)
+}
+
+// resyncFilteredResources re-evaluates the filtered resources of every project touched
+// by a batch, and syncs the ones whose filtered output no longer matches what is
+// deployed.
+//
+// A filtered file's deployed content depends on more than the file. git.commit.id,
+// git.branch, git.dirty and git.pushed all change with the repository, and none of them
+// produce a file event on the resource that mentions them, so committing, checking out,
+// pushing or simply dirtying the tree silently invalidates the deployed copy. Before
+// those values existed every token was a function of the pom and the file itself, and
+// reacting to file events alone was sufficient.
+//
+// This runs the ordinary sync path, which compares content and does nothing when it
+// matches, so a redeploy only happens when the deployed copy has genuinely gone stale.
+// It still needs some file event to fire: a commit with no subsequent edit is corrected
+// by the next save, not immediately.
+func resyncFilteredResources(handled map[string]bool) {
+	for _, path := range filteredResourcesToRecheck(handled) {
+		handleFileChangeSafely(path, "modified")
+	}
+}
+
+// filteredResourcesToRecheck lists the filtered resources of every project touched by a
+// batch, minus the files the batch already synced. Sorted, so a batch spanning projects
+// syncs in a stable order.
+func filteredResourcesToRecheck(handled map[string]bool) []string {
+	if !opts.ResourceFiltering {
+		return nil
+	}
+	roots := map[string]bool{}
+	for path := range handled {
+		if m := projectRootRegex.FindStringSubmatch(path); m != nil {
+			roots[m[1]] = true
+		}
+	}
+	var found []string
+	for root := range roots {
+		resources := filepath.Join(root, "src", "main", "resources")
+		_ = filepath.Walk(resources, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil
+			}
+			path = filepath.ToSlash(path)
+			if handled[path] || ignoreFile(path) {
+				return nil
+			}
+			if filtered, err := filteredResource(path, root); err != nil || !filtered {
+				return nil
+			}
+			found = append(found, path)
+			return nil
+		})
+	}
+	sort.Strings(found)
+	return found
 }
 
 // filteredTempFile writes the Maven-filtered content of file to a temp file

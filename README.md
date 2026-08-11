@@ -210,7 +210,11 @@ before syncing:
 - Live git values matching what `git-commit-id-maven-plugin` would inject:
   `git.commit.id`, `git.commit.id.abbrev`, `git.branch`, `git.dirty`,
   `git.pushed` (whether the commit is on origin, via
-  `git branch -r --contains HEAD`)
+  `git branch -r --contains HEAD`). Read from the local remote-tracking refs
+  and never over the network, so it is only as fresh as your last fetch. A
+  push made by URL rather than by remote name — what `maven-release-plugin`
+  does — leaves those refs untouched, and the commit then reads as unpushed
+  until something fetches
 - `user.name` (the JVM system property Maven interpolates), resolved from
   `$USER`/`$USERNAME`
 
@@ -218,6 +222,15 @@ Unknown tokens are left untouched (as Maven does) with a warning. Files not
 covered by a filtered resource — including binaries like keystores — are
 synced byte-for-byte. If filtering fails (e.g. the pom is mid-edit), the
 file is not synced and the last good deployed copy is kept.
+
+Because the git values above follow the repository rather than the file, a
+filtered resource can go stale with no event of its own: committing,
+checking out, pushing or just dirtying the tree changes what it should
+contain. Every batch therefore re-checks the filtered resources of the
+projects it touched and syncs the ones whose output no longer matches what
+is deployed, so nothing is redeployed unless it genuinely changed. This
+still needs some file event to fire — a commit with no subsequent edit is
+picked up on the next save.
 
 ### The parent pom is not read
 
