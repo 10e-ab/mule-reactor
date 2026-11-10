@@ -390,8 +390,8 @@ func handleFileChange(file, event string) {
 			}
 			return
 		}
-		withSourceFile(file, projectRoot, func(source string) {
-			destination := destinationDir + "/" + filepath.Base(file)
+		destination := destinationDir + "/" + filepath.Base(file)
+		withSourceFile(file, projectRoot, destination, func(source string) {
 			if event == "modified" && !significantChanges(source, destination) {
 				fmt.Println("No significant change, will not update")
 				return

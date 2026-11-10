@@ -201,12 +201,19 @@ before syncing:
 - `project.groupId`, `project.artifactId`, `project.version`,
   `project.name`, `project.basedir` (falling back to the `<parent>` values
   when inherited)
-- `maven.build.timestamp`, honoring `maven.build.timestamp.format` —
-  substituted with a fixed epoch sentinel (`1970-01-01T00:00:00Z`) rather
-  than the current time. MuleReactor didn't build anything, so a real
-  timestamp would be a lie — and the sentinel keeps filtered output
-  deterministic, so unchanged files diff as identical and don't trigger
-  needless redeploys
+- `maven.build.timestamp`, honoring `maven.build.timestamp.format` — kept
+  at whatever the last real Maven build wrote into the deployed copy, not
+  set to the current time. A hot sync is not a build: the property describes
+  the artifact, and the artifact was packaged by `mvn` at that moment and
+  has not been rebuilt since, so the value is carried over untouched. It is
+  recovered by matching the token's own line against the deployed file, so
+  it survives edits elsewhere in the file. When there is nothing to carry —
+  a first deploy, a deployed copy that was never filtered, occurrences that
+  disagree — it falls back to a fixed epoch sentinel
+  (`1970-01-01T00:00:00Z`), which is deliberately not the current time:
+  a live clock would make every filtered file differ from its deployed copy
+  on every batch and redeploy in a loop. A rebuild (whether the pom watcher
+  runs it or you do) puts a real timestamp back
 - Live git values matching what `git-commit-id-maven-plugin` would inject:
   `git.commit.id`, `git.commit.id.abbrev`, `git.branch`, `git.dirty`,
   `git.pushed` (whether the commit is on origin, via
@@ -250,7 +257,7 @@ second:
   only the parent's coordinates. A token that resolves during a Maven build
   is then left as-is here and reported in the unresolved warning. Values the
   build computes rather than declares — `git.*`, `maven.build.timestamp`,
-  `user.name` — are unaffected, as they're derived live from the list above.
+  `user.name` — are unaffected, as they're derived from the list above.
 
 Changes to the pom itself are detected too: any change to the
 `<dependencies>`, `<parent>`, `<properties>`, `<profiles>` or

@@ -8,9 +8,14 @@ package main
 // src/main/resources, such tokens would reach the runtime unresolved and break
 // Mule property resolution. For files covered by a filtered resource we mimic
 // Maven: substitute ${...} tokens before syncing, using the pom properties,
-// the project coordinates and live equivalents of build-time values
-// (git commit/dirty as injected by git-commit-id-maven-plugin, and
-// ${maven.build.timestamp}). Unknown tokens are left as-is, like Maven does.
+// the project coordinates and live equivalents of build-time values (git
+// commit/dirty as injected by git-commit-id-maven-plugin). Unknown tokens are
+// left as-is, like Maven does.
+//
+// ${maven.build.timestamp} is the one value we do not derive: a hot sync is
+// not a build, so it keeps whatever the last real Maven build wrote into the
+// deployed copy (carriedForwardValue), and only falls back to a fixed epoch
+// sentinel when there is nothing to carry over.
 
 import (
 	"fmt"
@@ -304,14 +309,9 @@ func gitOutput(projectRoot string, args ...string) (string, bool) {
 func dynamicMavenProperty(key, projectRoot string, properties map[string]string) (string, bool) {
 	switch key {
 	case "maven.build.timestamp":
-		// Deliberately a fixed sentinel, not time.Now(): it keeps the filtered
-		// output deterministic (so unchanged files diff as identical and don't
-		// redeploy) and honestly signals that the file was hot-synced, not built
-		javaFormat := properties["maven.build.timestamp.format"]
-		if javaFormat == "" {
-			javaFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'"
-		}
-		return javaFormatTime(time.Unix(0, 0).UTC(), javaFormat), true
+		// Only reached when no deployed copy holds a real build's timestamp to
+		// carry over (see carriedForwardValue)
+		return buildTimestampSentinel(properties), true
 	case "git.commit.id", "git.commit.id.full":
 		return gitOutput(projectRoot, "rev-parse", "HEAD")
 	case "git.commit.id.abbrev":
@@ -424,16 +424,28 @@ func zoneOffset(t time.Time, colon bool) string {
 	return fmt.Sprintf("%s%02d%02d", sign, hours, minutes)
 }
 
-func filterMavenTokens(content, projectRoot string) (string, error) {
+// filterMavenTokens substitutes Maven ${...} tokens in content. deployed is
+// the path to the currently deployed copy of the file, or "" when there is
+// none; it is the only place a previous build's ${maven.build.timestamp} still
+// exists, and the only reason this needs to know about the destination.
+func filterMavenTokens(content, projectRoot, deployed string) (string, error) {
 	properties, err := mavenProperties(projectRoot)
 	if err != nil {
 		return "", err
 	}
+	// The build timestamp is settled after the substitution pass, not during
+	// it: recovering the deployed value needs the surrounding line as it will
+	// be written, so the token leaves a placeholder behind for now
+	carryTimestamp := deployed != "" && !strings.Contains(content, buildTimestampPlaceholder)
 	// Dynamic values can spawn a git subprocess, resolve each key at most once
 	dynamicValues := map[string]*string{}
 	var substituted, unresolved []string
 	filtered := mavenTokenRegex.ReplaceAllStringFunc(content, func(token string) string {
 		key := token[2 : len(token)-1]
+		if carryTimestamp && key == "maven.build.timestamp" {
+			substituted = append(substituted, key)
+			return buildTimestampPlaceholder
+		}
 		value, cached := dynamicValues[key]
 		if !cached {
 			if v, ok := dynamicMavenProperty(key, projectRoot, properties); ok {
@@ -459,7 +471,103 @@ func filterMavenTokens(content, projectRoot string) (string, error) {
 	if len(unresolved) > 0 {
 		fmt.Printf("WARNING: Maven filtering could not resolve: %s (left as-is)\n", strings.Join(uniqueStrings(unresolved), ", "))
 	}
+	if strings.Contains(filtered, buildTimestampPlaceholder) {
+		timestamp, carried := carriedForwardValue(filtered, buildTimestampPlaceholder, deployed)
+		if !carried {
+			timestamp = buildTimestampSentinel(properties)
+		} else if opts.Verbose {
+			fmt.Printf("Maven filtering kept the deployed build timestamp %s: a hot sync is not a build\n", timestamp)
+		}
+		filtered = strings.ReplaceAll(filtered, buildTimestampPlaceholder, timestamp)
+	}
 	return filtered, nil
+}
+
+// A stand-in for the build timestamp's place in the filtered output, held
+// until we know whether the deployed copy has a value to carry forward. The
+// NULs keep it from colliding with anything a real resource file contains.
+const buildTimestampPlaceholder = "\x00mule-reactor.maven.build.timestamp\x00"
+
+// buildTimestampSentinel is what ${maven.build.timestamp} resolves to when no
+// real build's value can be recovered. Deliberately a fixed epoch rather than
+// time.Now(): a live clock would make every filtered file differ from its
+// deployed copy on every batch and redeploy in a loop, and an impossible date
+// reads as the "nothing built this" that it is.
+func buildTimestampSentinel(properties map[string]string) string {
+	javaFormat := properties["maven.build.timestamp.format"]
+	if javaFormat == "" {
+		javaFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'"
+	}
+	return javaFormatTime(time.Unix(0, 0).UTC(), javaFormat)
+}
+
+// carriedForwardValue recovers what the deployed file holds where filtered has
+// placeholder. A hot sync is not a build, so the build timestamp belongs to
+// the last real Maven build and has to survive untouched — but it survives
+// only as text in the deployed copy, which we have to find again.
+//
+// Matching is per line rather than whole-file: the file is being synced
+// because something in it changed, so the token's own line is the only one we
+// can count on still matching. That line does have to match, which is the
+// known limit here — a line mixing the timestamp with a value that moved
+// (${git.commit.id}, say) recovers nothing and takes the sentinel. Whatever is
+// recovered becomes the value written back, which makes it a fixed point: the
+// next batch recovers the same string and sees no change to deploy, and even
+// the sentinel settles after the one redeploy that writes it.
+func carriedForwardValue(filtered, placeholder, deployed string) (string, bool) {
+	data, err := os.ReadFile(deployed)
+	if err != nil || !utf8.Valid(data) {
+		return "", false
+	}
+	deployedLines := strings.Split(string(data), "\n")
+	value := ""
+	found := false
+	for _, line := range strings.Split(filtered, "\n") {
+		if !strings.Contains(line, placeholder) {
+			continue
+		}
+		pattern, err := linePattern(line, placeholder)
+		if err != nil {
+			return "", false
+		}
+		matched := false
+		for _, candidate := range deployedLines {
+			groups := pattern.FindStringSubmatch(candidate)
+			if groups == nil {
+				continue
+			}
+			for _, group := range groups[1:] {
+				// An empty capture is no value at all, and one that still
+				// carries ${...} would put an unresolved token back into the
+				// deployed copy — the very thing filtering exists to prevent
+				if group == "" || strings.Contains(group, "${") {
+					return "", false
+				}
+				// Occurrences that disagree cannot all be the build's
+				// timestamp, and picking one of them would be a guess
+				if found && group != value {
+					return "", false
+				}
+				value, found = group, true
+			}
+			matched = true
+		}
+		if !matched {
+			return "", false
+		}
+	}
+	return value, found
+}
+
+// linePattern turns a filtered line into a matcher for the deployed line it
+// was rendered from: the line verbatim, with a capture group wherever the
+// placeholder stands.
+func linePattern(line, placeholder string) (*regexp.Regexp, error) {
+	parts := strings.Split(line, placeholder)
+	for i, part := range parts {
+		parts[i] = regexp.QuoteMeta(part)
+	}
+	return regexp.Compile(`\A` + strings.Join(parts, `(.*?)`) + `\z`)
 }
 
 func uniqueStrings(in []string) []string {
@@ -476,12 +584,14 @@ func uniqueStrings(in []string) []string {
 
 // withSourceFile calls fn with the path to sync: a temp file with Maven
 // ${...} tokens substituted when the pom marks the file as a filtered
-// resource, otherwise the file itself. The temp file is always deleted,
-// whatever fn does. If filtering fails (e.g. the pom is unreadable mid-edit)
-// fn is NOT called — keeping the last good deployed copy beats syncing a file
-// with unresolved ${...} tokens that would break property resolution.
-func withSourceFile(file, projectRoot string, fn func(source string)) {
-	tmp, err := filteredTempFile(file, projectRoot)
+// resource, otherwise the file itself. deployed is where the file syncs to,
+// which filtering reads to carry a real build's ${maven.build.timestamp} over.
+// The temp file is always deleted, whatever fn does. If filtering fails (e.g.
+// the pom is unreadable mid-edit) fn is NOT called — keeping the last good
+// deployed copy beats syncing a file with unresolved ${...} tokens that would
+// break property resolution.
+func withSourceFile(file, projectRoot, deployed string, fn func(source string)) {
+	tmp, err := filteredTempFile(file, projectRoot, deployed)
 	if err != nil {
 		fmt.Printf("WARNING: Maven resource filtering failed for %s: %v. Skipping sync, keeping the deployed file unchanged.\n", file, err)
 		return
@@ -555,7 +665,7 @@ func filteredResourcesToRecheck(handled map[string]bool) []string {
 // and returns its path, or "" when the file is not a filtered resource (or
 // not valid UTF-8, which is synced raw). The temp file carries file's
 // permissions so the deployed copy keeps them.
-func filteredTempFile(file, projectRoot string) (string, error) {
+func filteredTempFile(file, projectRoot, deployed string) (string, error) {
 	if !opts.ResourceFiltering || projectRoot == "" || !resourcesFile(file) {
 		return "", nil
 	}
@@ -569,7 +679,7 @@ func filteredTempFile(file, projectRoot string) (string, error) {
 	if !utf8.Valid(data) {
 		return "", nil
 	}
-	content, err := filterMavenTokens(string(data), projectRoot)
+	content, err := filterMavenTokens(string(data), projectRoot, deployed)
 	if err != nil {
 		return "", err
 	}

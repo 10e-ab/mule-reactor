@@ -243,7 +243,7 @@ func TestFilterMavenTokens(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir+"/pom.xml", twoEntryPom)
 
-	got, err := filterMavenTokens("a=${env}\nb=${no.such}\nv=${project.version}\nts=${maven.build.timestamp}\n", dir)
+	got, err := filterMavenTokens("a=${env}\nb=${no.such}\nv=${project.version}\nts=${maven.build.timestamp}\n", dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,12 +258,163 @@ func TestFilterMavenTokensUserName(t *testing.T) {
 	t.Setenv("USER", "tester")
 	dir := t.TempDir()
 	writeFile(t, dir+"/pom.xml", twoEntryPom)
-	got, err := filterMavenTokens("u=${user.name}", dir)
+	got, err := filterMavenTokens("u=${user.name}", dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != "u=tester" {
 		t.Errorf("got %q, want u=tester", got)
+	}
+}
+
+// A hot sync is not a build, so the build timestamp must survive it: these
+// cover what is carried over from the deployed copy and what falls back to the
+// epoch sentinel.
+
+const builtAtSource = "built.at=${maven.build.timestamp}\nkey=new\n"
+
+// carryFixture writes a pom and a deployed copy, and returns the project dir
+// and the path to the deployed copy.
+func carryFixture(t *testing.T, deployedContent string) (string, string) {
+	t.Helper()
+	setOpts(t, defaultTestOpts())
+	dir := t.TempDir()
+	writeFile(t, dir+"/pom.xml", twoEntryPom)
+	deployed := dir + "/deployed/app.properties"
+	writeFile(t, deployed, deployedContent)
+	return dir, deployed
+}
+
+func TestFilterMavenTokensCarriesDeployedBuildTimestamp(t *testing.T) {
+	dir, deployed := carryFixture(t, "built.at=2026-09-07T10:12:33Z\nkey=old\n")
+
+	got, err := filterMavenTokens(builtAtSource, dir, deployed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "built.at=2026-09-07T10:12:33Z\nkey=new\n"
+	if got != want {
+		t.Errorf("filterMavenTokens = %q, want %q", got, want)
+	}
+}
+
+// The value written is the value found, so filtering the same source again
+// against the copy just deployed must produce the same bytes — otherwise every
+// batch would see a difference and redeploy in a loop.
+func TestFilterMavenTokensCarryForwardIsAFixedPoint(t *testing.T) {
+	dir, deployed := carryFixture(t, "built.at=2026-09-07T10:12:33Z\nkey=old\n")
+
+	first, err := filterMavenTokens(builtAtSource, dir, deployed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, deployed, first)
+	second, err := filterMavenTokens(builtAtSource, dir, deployed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second != first {
+		t.Errorf("second pass = %q, want the first pass unchanged %q", second, first)
+	}
+}
+
+func TestFilterMavenTokensSentinelWithoutDeployedCopy(t *testing.T) {
+	setOpts(t, defaultTestOpts())
+	dir := t.TempDir()
+	writeFile(t, dir+"/pom.xml", twoEntryPom)
+
+	for name, deployed := range map[string]string{
+		"no destination known": "",
+		"first deploy":         dir + "/deployed/app.properties",
+	} {
+		got, err := filterMavenTokens(builtAtSource, dir, deployed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "built.at=1970-01-01T00:00:00Z\nkey=new\n"
+		if got != want {
+			t.Errorf("%s: filterMavenTokens = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestFilterMavenTokensSentinelWhenNothingCanBeCarried(t *testing.T) {
+	cases := map[string]struct {
+		source, deployed string
+	}{
+		// The line holding the token is gone from the deployed copy
+		"line no longer there": {builtAtSource, "other=1\n"},
+		// Carrying this back would put an unresolved token into the deployed
+		// copy, which is what filtering exists to prevent
+		"deployed copy was never filtered": {builtAtSource, "built.at=${maven.build.timestamp}\n"},
+		// Nothing there to carry
+		"deployed value is empty": {builtAtSource, "built.at=\n"},
+		// Two occurrences that disagree: neither is knowably the build's
+		"occurrences disagree": {
+			"a=${maven.build.timestamp}\nb=${maven.build.timestamp}\n",
+			"a=2026-09-07T10:12:33Z\nb=2026-01-01T00:00:00Z\n",
+		},
+	}
+	for name, tc := range cases {
+		dir, deployed := carryFixture(t, tc.deployed)
+		got, err := filterMavenTokens(tc.source, dir, deployed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(got, "1970-01-01T00:00:00Z") {
+			t.Errorf("%s: filterMavenTokens = %q, want the epoch sentinel", name, got)
+		}
+	}
+}
+
+// Agreeing occurrences are one build's timestamp and are all carried over.
+func TestFilterMavenTokensCarriesAgreeingOccurrences(t *testing.T) {
+	dir, deployed := carryFixture(t, "a=2026-09-07T10:12:33Z\nb=2026-09-07T10:12:33Z\n")
+
+	got, err := filterMavenTokens("a=${maven.build.timestamp}\nb=${maven.build.timestamp}\n", dir, deployed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "a=2026-09-07T10:12:33Z\nb=2026-09-07T10:12:33Z\n"
+	if got != want {
+		t.Errorf("filterMavenTokens = %q, want %q", got, want)
+	}
+}
+
+// The token need not sit in a key=value line: the whole line around it is the
+// pattern, so XML and DataWeave carry over just as well.
+func TestFilterMavenTokensCarriesTimestampInMarkup(t *testing.T) {
+	dir, deployed := carryFixture(t, "  <builtAt>2026-09-07T10:12:33Z</builtAt>\n")
+
+	got, err := filterMavenTokens("  <builtAt>${maven.build.timestamp}</builtAt>\n", dir, deployed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "  <builtAt>2026-09-07T10:12:33Z</builtAt>\n"
+	if got != want {
+		t.Errorf("filterMavenTokens = %q, want %q", got, want)
+	}
+}
+
+func TestWithSourceFileCarriesDeployedBuildTimestamp(t *testing.T) {
+	setOpts(t, defaultTestOpts())
+	dir := t.TempDir()
+	writeFile(t, dir+"/pom.xml", twoEntryPom)
+	file := dir + "/src/main/resources/app.properties"
+	writeFile(t, file, builtAtSource)
+	deployed := dir + "/deployed/app.properties"
+	writeFile(t, deployed, "built.at=2026-09-07T10:12:33Z\nkey=old\n")
+
+	called := false
+	withSourceFile(file, dir, deployed, func(source string) {
+		called = true
+		want := "built.at=2026-09-07T10:12:33Z\nkey=new\n"
+		if got := readFile(t, source); got != want {
+			t.Errorf("filtered content = %q, want %q", got, want)
+		}
+	})
+	if !called {
+		t.Fatal("fn was not called")
 	}
 }
 
@@ -389,7 +540,7 @@ func TestWithSourceFileFiltersAndCleansUp(t *testing.T) {
 
 	var tempPath string
 	called := false
-	withSourceFile(file, dir, func(source string) {
+	withSourceFile(file, dir, "", func(source string) {
 		called = true
 		tempPath = source
 		if source == file {
@@ -418,7 +569,7 @@ func TestWithSourceFileSkipsOnBrokenPom(t *testing.T) {
 	writeFile(t, file, "env=${env}\n")
 
 	called := false
-	withSourceFile(file, dir, func(string) { called = true })
+	withSourceFile(file, dir, "", func(string) { called = true })
 	if called {
 		t.Error("sync must be skipped when the pom cannot be parsed")
 	}
@@ -433,7 +584,7 @@ func TestWithSourceFileRawWhenFilteringDisabled(t *testing.T) {
 	file := dir + "/src/main/resources/app.properties"
 	writeFile(t, file, "env=${env}\n")
 
-	withSourceFile(file, dir, func(source string) {
+	withSourceFile(file, dir, "", func(source string) {
 		if source != file {
 			t.Errorf("with filtering disabled the original file should be synced, got %q", source)
 		}
@@ -451,7 +602,7 @@ func TestWithSourceFileRawOnInvalidUTF8(t *testing.T) {
 	if err := os.WriteFile(file, []byte{0xff, 0xfe, 0x00, 0x01}, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	withSourceFile(file, dir, func(source string) {
+	withSourceFile(file, dir, "", func(source string) {
 		if source != file {
 			t.Errorf("non-UTF-8 content should be synced raw, got %q", source)
 		}
