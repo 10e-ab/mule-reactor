@@ -492,6 +492,56 @@ func TestDynamicMavenPropertyGitPushed(t *testing.T) {
 	}
 }
 
+func TestDynamicMavenPropertyGitUnreleased(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	commit := func(message string) { git("commit", "-q", "--allow-empty", "-m", message) }
+	want := func(expected, why string) {
+		t.Helper()
+		got, ok := dynamicMavenProperty("git.unreleased", dir, nil)
+		if !ok || got != expected {
+			t.Errorf("git.unreleased %s = (%q, %v), want %q", why, got, ok, expected)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "Tester")
+	commit("init")
+	want("unknown", "with no tags")
+
+	commit("[maven-release-plugin] prepare release 1.0.0")
+	git("tag", "1.0.0")
+	commit("[maven-release-plugin] prepare for next development iteration")
+	want("0", "right after a release")
+
+	// Forked before the next release, so its first commit ships in 1.0.1
+	// while the branch never sees that tag
+	git("checkout", "-q", "-b", "feature")
+	commit("shipped in 1.0.1")
+	git("checkout", "-q", "main")
+	git("merge", "-q", "--ff-only", "feature")
+	commit("[maven-release-plugin] prepare release 1.0.1")
+	git("tag", "1.0.1")
+	commit("[maven-release-plugin] prepare for next development iteration")
+	git("checkout", "-q", "feature")
+	commit("feature work")
+	want("1", "on a branch forked before the latest release")
+
+	git("checkout", "-q", "main")
+	commit("on main")
+	git("merge", "-q", "--no-ff", "-m", "merge feature", "feature")
+	want("2", "with a merge commit")
+}
+
 func TestFilteredResourcesToRecheck(t *testing.T) {
 	setOpts(t, defaultTestOpts())
 	dir := t.TempDir()

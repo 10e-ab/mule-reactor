@@ -222,6 +222,9 @@ before syncing:
   push made by URL rather than by remote name — what `maven-release-plugin`
   does — leaves those refs untouched, and the commit then reads as unpushed
   until something fetches
+- `git.unreleased`: commits since the newest release tag in the repository,
+  leaving out merges and `[maven-release-plugin]` commits, counted the way
+  `itab-mule-parent` counts them; `unknown` when the repository has no tags
 - `user.name` (the JVM system property Maven interpolates), resolved from
   `$USER`/`$USERNAME`
 

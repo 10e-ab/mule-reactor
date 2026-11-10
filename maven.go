@@ -333,6 +333,22 @@ func dynamicMavenProperty(key, projectRoot string, properties map[string]string)
 			return "", false
 		}
 		return strconv.FormatBool(remotes != ""), true
+	case "git.unreleased":
+		// Commits since the newest release tag, as itab-mule-parent counts them.
+		// The tag is the newest in the whole repository, not git describe's
+		// nearest: a branch forked before the latest release would otherwise
+		// count commits that have already shipped. Merges and the release
+		// plugin's own commits are left out, so a build on a release reads 0
+		tag, ok := gitOutput(projectRoot, "rev-list", "--tags", "--max-count=1")
+		if !ok {
+			return "", false
+		}
+		if tag == "" {
+			// What a Maven build writes when there is no tag to count from
+			return "unknown", true
+		}
+		return gitOutput(projectRoot, "rev-list", "--count", "--no-merges", "--invert-grep",
+			"--grep=^\\[maven-release-plugin\\]", tag+"..HEAD")
 	case "user.name":
 		// Maven resolves ${user.name} from the JVM system property
 		if v := os.Getenv("USER"); v != "" {
@@ -610,9 +626,9 @@ func withSourceFile(file, projectRoot, deployed string, fn func(source string)) 
 // deployed.
 //
 // A filtered file's deployed content depends on more than the file. git.commit.id,
-// git.branch, git.dirty and git.pushed all change with the repository, and none of them
-// produce a file event on the resource that mentions them, so committing, checking out,
-// pushing or simply dirtying the tree silently invalidates the deployed copy. Before
+// git.branch, git.dirty, git.pushed and git.unreleased all change with the repository,
+// and none of them produce a file event on the resource that mentions them, so committing,
+// checking out, pushing, tagging a release or simply dirtying the tree silently invalidates the deployed copy. Before
 // those values existed every token was a function of the pom and the file itself, and
 // reacting to file events alone was sufficient.
 //
