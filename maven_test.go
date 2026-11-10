@@ -497,9 +497,15 @@ func TestDynamicMavenPropertyGitUnreleased(t *testing.T) {
 		t.Skip("git not available")
 	}
 	dir := t.TempDir()
+	// The newest tag is chosen by commit date, so every commit gets its own
+	// second; made within the same one, the tags would tie and either could win
+	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	git := func(args ...string) {
 		t.Helper()
+		clock = clock.Add(time.Second)
+		date := clock.Format(time.RFC3339)
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_DATE="+date, "GIT_COMMITTER_DATE="+date)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
